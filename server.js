@@ -3,8 +3,10 @@ const fs = require('fs');
 const path = require('path');
 
 const port = process.env.PORT || 4173;
-// ここを修正：参照先を public フォルダに変更
-const root = path.join(__dirname, 'public');
+// __dirname は server.js がある場所です。そこから public フォルダを指定します。
+const root = path.resolve(__dirname, 'public');
+
+console.log(`Checking root directory: ${root}`);
 
 const mimeTypes = {
   '.html': 'text/html; charset=utf-8',
@@ -21,6 +23,7 @@ const mimeTypes = {
 function sendFile(res, filePath) {
   fs.readFile(filePath, (err, data) => {
     if (err) {
+      console.error(`File not found: ${filePath}`);
       res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
       res.end('Not found');
       return;
@@ -34,11 +37,9 @@ function sendFile(res, filePath) {
 }
 
 const server = http.createServer((req, res) => {
-  // セキュリティ対策：URLからパスを正規化
   const safePath = path.normalize(decodeURIComponent(req.url.split('?')[0])).replace(/^\.\.(\/|\\|$)/, '');
   let filePath = path.join(root, safePath === '/' ? '/index.html' : safePath);
 
-  // root (publicフォルダ) 外へのアクセスを禁止
   if (!filePath.startsWith(root)) {
     res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
     res.end('Forbidden');
@@ -51,8 +52,9 @@ const server = http.createServer((req, res) => {
       return;
     }
 
-    // ファイルが見つからない場合は index.html を返す (SPA対応)
-    sendFile(res, path.join(root, 'index.html'));
+    // index.html があるか最終確認
+    const indexFallback = path.join(root, 'index.html');
+    sendFile(res, indexFallback);
   });
 });
 
