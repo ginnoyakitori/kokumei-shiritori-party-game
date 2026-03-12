@@ -1,0 +1,47 @@
+﻿<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>party-game | どこパ風 全員一致ゲーム</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="hero">
+        <p class="badge">party-game</p>
+        <h1>どこパ風・全員一致ゲーム</h1>
+        <p class="subtitle">ラウンジで雑談しながら、お題に対して全員同じ答えを目指そう。</p>
+      </header>
+
+      <section class="panel">
+        <h2>ラウンジ</h2>
+        <p class="panel-description">参加メンバーを追加してゲームの準備をします。</p>
+        <div class="row">
+          <input id="playerName" type="text" placeholder="プレイヤー名" maxlength="20" />
+          <button id="addPlayerBtn">参加する</button>
+        </div>
+        <ul id="playerList" class="chips"></ul>
+      </section>
+
+      <section class="panel">
+        <h2>全員一致ゲーム</h2>
+        <div class="row stacked-mobile">
+          <input id="topicInput" type="text" placeholder="お題（例: 朝ごはんの定番）" maxlength="80" />
+          <button id="startRoundBtn">ラウンド開始</button>
+        </div>
+        <p id="currentTopic" class="topic">お題を設定してください。</p>
+
+        <div id="answerArea" class="answer-area"></div>
+
+        <div class="actions">
+          <button id="revealBtn" disabled>回答を公開する</button>
+          <button id="nextBtn" disabled>次のお題へ</button>
+        </div>
+
+        <section id="resultPanel" class="result" aria-live="polite"></section>
+      </section>
+    </main>
+    <script src="app.js"></script>
+  </body>
+</html>

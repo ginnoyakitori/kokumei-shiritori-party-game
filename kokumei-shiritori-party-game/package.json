@@ -1,0 +1,9 @@
+﻿{
+  "name": "kokumei-shiritori-party-game",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Dokopa-style unanimous party game",
+  "scripts": {
+    "start": "node server.js"
+  }
+}
