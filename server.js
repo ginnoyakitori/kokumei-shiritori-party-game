@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 
 const port = process.env.PORT || 4173;
-const root = __dirname;
+const root = __dirname; 
 
 const mimeTypes = {
   '.html': 'text/html; charset=utf-8',
@@ -18,13 +18,15 @@ const mimeTypes = {
 };
 
 function sendFile(res, filePath) {
+  // デバッグ用ログ：どのファイルを開こうとしているか表示
+  console.log(`Attempting to serve file: ${filePath}`);
+  
   fs.readFile(filePath, (err, data) => {
     if (err) {
       res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
       res.end('Not found');
       return;
     }
-
     const ext = path.extname(filePath).toLowerCase();
     const type = mimeTypes[ext] || 'application/octet-stream';
     res.writeHead(200, { 'Content-Type': type });
@@ -47,7 +49,7 @@ const server = http.createServer((req, res) => {
       sendFile(res, filePath);
       return;
     }
-
+    // index.html が見つからない場合のフォールバック
     sendFile(res, path.join(root, 'index.html'));
   });
 });
