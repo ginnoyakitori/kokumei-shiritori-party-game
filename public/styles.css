@@ -1,0 +1,146 @@
+﻿:root {
+  color-scheme: dark;
+  --bg: #0d1021;
+  --card: #1a1e35;
+  --accent: #7a8cff;
+  --accent-soft: #3c478a;
+  --text: #f3f5ff;
+  --muted: #b7bddc;
+}
+
+* {
+  box-sizing: border-box;
+  font-family: "Inter", "Noto Sans JP", system-ui, sans-serif;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: radial-gradient(circle at 10% 10%, #22274a, var(--bg));
+  color: var(--text);
+}
+
+.app-shell {
+  width: min(920px, 100% - 2rem);
+  margin: 2rem auto;
+  display: grid;
+  gap: 1rem;
+}
+
+.hero,
+.panel {
+  background: color-mix(in srgb, var(--card), black 15%);
+  border: 1px solid #2a2f4f;
+  border-radius: 16px;
+  padding: 1rem 1.2rem;
+}
+
+.badge {
+  margin: 0;
+  display: inline-block;
+  background: var(--accent-soft);
+  border-radius: 999px;
+  padding: 0.2rem 0.7rem;
+  font-size: 0.8rem;
+}
+
+.subtitle,
+.panel-description {
+  color: var(--muted);
+}
+
+.row {
+  display: flex;
+  gap: 0.6rem;
+  margin-top: 0.9rem;
+}
+
+input,
+button {
+  border-radius: 10px;
+  border: 1px solid #3b4268;
+  padding: 0.68rem 0.8rem;
+  font-size: 1rem;
+}
+
+input {
+  background: #10142b;
+  color: var(--text);
+  flex: 1;
+}
+
+button {
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button[disabled] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.chips {
+  margin: 0.8rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.chips li {
+  list-style: none;
+  border: 1px solid #414b82;
+  border-radius: 999px;
+  padding: 0.25rem 0.7rem;
+  background: #1f2550;
+}
+
+.topic {
+  margin: 0.85rem 0;
+}
+
+.answer-area {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.answer-card {
+  display: grid;
+  gap: 0.35rem;
+  background: #111734;
+  border: 1px solid #2b3867;
+  padding: 0.75rem;
+  border-radius: 12px;
+}
+
+.actions {
+  display: flex;
+  gap: 0.7rem;
+  margin-top: 0.9rem;
+}
+
+.result {
+  margin-top: 1rem;
+  border-radius: 12px;
+  border: 1px solid #2e355c;
+  background: #0f1430;
+  padding: 0.8rem;
+  white-space: pre-line;
+}
+
+.result.ok {
+  border-color: #1f7c57;
+}
+
+.result.ng {
+  border-color: #8c2e4d;
+}
+
+@media (max-width: 640px) {
+  .stacked-mobile,
+  .actions {
+    flex-direction: column;
+  }
+}

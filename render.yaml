@@ -1,6 +1,6 @@
 ﻿services:
   - type: web
-    name: party-game
+    name: kokumei-shiritori-party-game
     env: static
     buildCommand: ""
     staticPublishPath: .
