@@ -3,10 +3,7 @@ const fs = require('fs');
 const path = require('path');
 
 const port = process.env.PORT || 4173;
-// __dirname は server.js がある場所です。そこから public フォルダを指定します。
-const root = path.resolve(__dirname, 'public');
-
-console.log(`Checking root directory: ${root}`);
+const root = __dirname;
 
 const mimeTypes = {
   '.html': 'text/html; charset=utf-8',
@@ -23,7 +20,6 @@ const mimeTypes = {
 function sendFile(res, filePath) {
   fs.readFile(filePath, (err, data) => {
     if (err) {
-      console.error(`File not found: ${filePath}`);
       res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
       res.end('Not found');
       return;
@@ -52,9 +48,7 @@ const server = http.createServer((req, res) => {
       return;
     }
 
-    // index.html があるか最終確認
-    const indexFallback = path.join(root, 'index.html');
-    sendFile(res, indexFallback);
+    sendFile(res, path.join(root, 'index.html'));
   });
 });
 
