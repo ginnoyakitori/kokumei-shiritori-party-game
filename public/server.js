@@ -3,8 +3,7 @@ const fs = require('fs');
 const path = require('path');
 
 const port = process.env.PORT || 4173;
-// ここを修正：参照先を public フォルダに変更
-const root = path.join(__dirname, 'public');
+const root = __dirname;
 
 const mimeTypes = {
   '.html': 'text/html; charset=utf-8',
@@ -34,11 +33,9 @@ function sendFile(res, filePath) {
 }
 
 const server = http.createServer((req, res) => {
-  // セキュリティ対策：URLからパスを正規化
   const safePath = path.normalize(decodeURIComponent(req.url.split('?')[0])).replace(/^\.\.(\/|\\|$)/, '');
   let filePath = path.join(root, safePath === '/' ? '/index.html' : safePath);
 
-  // root (publicフォルダ) 外へのアクセスを禁止
   if (!filePath.startsWith(root)) {
     res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
     res.end('Forbidden');
@@ -51,7 +48,6 @@ const server = http.createServer((req, res) => {
       return;
     }
 
-    // ファイルが見つからない場合は index.html を返す (SPA対応)
     sendFile(res, path.join(root, 'index.html'));
   });
 });
