@@ -5,102 +5,76 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>全員一致ゲーム</title>
     <style>
-        body { font-family: sans-serif; text-align: center; background: #f0f4f8; padding: 20px; }
-        .card { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); max-width: 400px; margin: auto; }
-        .hidden { display: none; }
-        input { width: 80%; padding: 10px; margin: 10px 0; border: 1px solid #ccc; border-radius: 5px; }
-        button { padding: 10px 20px; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; }
-        button:hover { background: #0056b3; }
-        ul { list-style: none; padding: 0; }
-        li { background: #eee; margin: 5px 0; padding: 8px; border-radius: 4px; }
-        #result-status { font-size: 1.5rem; font-weight: bold; }
+        body { font-family: 'Helvetica Neue', Arial, sans-serif; background: #fdfde3; margin: 0; padding: 10px; display: flex; justify-content: center; }
+        .app-container { width: 100%; max-width: 450px; background: #f0f8ff; border-radius: 20px; overflow: hidden; box-shadow: 0 5px 15px rgba(0,0,0,0.1); min-height: 90vh; position: relative; }
+        .header { background: #6a0dad; color: white; padding: 15px; font-weight: bold; font-size: 1.2rem; display: flex; justify-content: space-between; align-items: center; }
+        .hidden { display: none !important; }
+        
+        /* お題ボックス */
+        .question-box { background: white; border: 3px solid #ffeb3b; border-radius: 15px; margin: 20px; padding: 20px; font-size: 1.2rem; font-weight: bold; text-align: center; }
+        
+        /* プレイヤーグリッド */
+        .member-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; padding: 15px; }
+        .player-card { background: #999; border-radius: 15px; padding: 25px 10px; text-align: center; color: white; transition: 0.3s; box-shadow: inset 0 0 10px rgba(0,0,0,0.2); }
+        .player-card.ready { background: #7a7a7a; border: 3px solid #ffd700; }
+        .status-text { font-size: 1.8rem; font-weight: bold; color: #ccc; letter-spacing: 2px; }
+        .ready .status-text { color: #f9d71c; text-shadow: 0 0 5px rgba(255,215,0,0.5); }
+        .player-name { margin-top: 10px; font-size: 0.9rem; font-weight: bold; }
+
+        /* 入力エリア */
+        .footer-input { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); width: 90%; max-width: 400px; background: rgba(255,255,255,0.9); padding: 15px; border-radius: 15px; box-shadow: 0 -2px 10px rgba(0,0,0,0.1); }
+        input[type="text"] { width: 80%; padding: 12px; border-radius: 20px; border: 2px solid #ddd; margin-bottom: 10px; }
+        button { border-radius: 20px; border: none; padding: 10px 20px; font-weight: bold; cursor: pointer; }
+        .btn-pink { background: #ff6699; color: white; width: 100%; font-size: 1.3rem; }
+        .btn-main { background: #007bff; color: white; }
+
+        /* 結果表示 */
+        .result-item { background: white; margin: 5px; padding: 10px; border-radius: 10px; border-left: 5px solid #6a0dad; list-style: none; text-align: left; }
     </style>
 </head>
 <body>
 
-    <div class="card">
-        <div id="view-lobby">
-            <h1>ロビー</h1>
-            <input type="text" id="input-name" placeholder="あなたの名前">
-            <input type="text" id="input-room" placeholder="ルーム番号">
-            <button onclick="join()">入室</button>
-        </div>
+<div class="app-container">
+    <div class="header">
+        <span>ゲーム終了</span>
+        <span>全員一致ゲーム</span>
+        <span>遊び方</span>
+    </div>
 
-        <div id="view-room" class="hidden">
-            <h2>ルーム: <span id="display-room"></span></h2>
-            <p>参加メンバー:</p>
-            <ul id="member-list"></ul>
-            <p>全員揃ったら回答を始めてください</p>
-            <button onclick="showGame()">回答画面へ</button>
-        </div>
-
-        <div id="view-game" class="hidden">
-            <h2>お題：赤い果物といえば？</h2>
-            <input type="text" id="input-answer" placeholder="答えを入力">
-            <button onclick="submit()">送信</button>
-        </div>
-
-        <div id="view-result" class="hidden">
-            <div id="result-status"></div>
-            <ul id="result-list"></ul>
-            <button onclick="resetUI()">次のお題へ</button>
+    <div id="view-lobby" class="view">
+        <div style="padding: 40px 20px;">
+            <input type="text" id="input-name" placeholder="名前を入力">
+            <input type="text" id="input-room" placeholder="部屋番号">
+            <button class="btn-main" onclick="join()" style="width: 100%;">入室する</button>
         </div>
     </div>
 
-    <script src="/socket.io/socket.io.js"></script>
-    <script>
-        const socket = io();
-        let currentRoom = "";
+    <div id="view-game" class="view hidden">
+        <div id="question-area" class="question-box">お題を入力してください</div>
+        
+        <div id="member-list" class="member-grid"></div>
 
-        function showView(id) {
-            ["view-lobby", "view-room", "view-game", "view-result"].forEach(v => {
-                document.getElementById(v).classList.add('hidden');
-            });
-            document.getElementById(id).classList.remove('hidden');
-        }
-
-        function join() {
-            const name = document.getElementById('input-name').value;
-            currentRoom = document.getElementById('input-room').value;
-            if(!name || !currentRoom) return alert("入力してください");
-            socket.emit('join-room', { name, rid: currentRoom });
-        }
-
-        socket.on('room-data', (data) => {
-            document.getElementById('display-room').innerText = data.rid;
-            document.getElementById('member-list').innerHTML = data.members.map(m => `<li>${m}</li>`).join('');
-            if(document.getElementById('view-lobby').className !== 'hidden') showView('view-room');
-        });
-
-        function showGame() { showView('view-game'); }
-
-        function submit() {
-            const answer = document.getElementById('input-answer').value;
-            if(!answer) return alert("入力してください");
-            socket.emit('submit-answer', { rid: currentRoom, answer });
-            document.getElementById('view-game').innerHTML = "<h3>他の人を待っています...</h3>";
-        }
-
-        socket.on('show-result', (data) => {
-            showView('view-result');
-            const status = document.getElementById('result-status');
-            status.innerText = data.isMatch ? "🎉 全員一致！" : "🤔 不一致...";
-            status.style.color = data.isMatch ? "#28a745" : "#dc3545";
-            
-            document.getElementById('result-list').innerHTML = data.results.map(r => 
-                `<li><strong>${r.name}:</strong> ${r.answer}</li>`
-            ).join('');
-        });
-
-        function resetUI() {
-            document.getElementById('input-answer').value = "";
-            document.getElementById('view-game').innerHTML = `
-                <h2>お題：赤い果物といえば？</h2>
+        <div id="control-panel" class="footer-input">
+            <div id="host-q-input" class="hidden">
+                <input type="text" id="input-question" placeholder="新しいお題を入力">
+                <button class="btn-main" onclick="sendQuestion()">お題を出す</button>
+            </div>
+            <div id="player-ans-input" class="hidden">
                 <input type="text" id="input-answer" placeholder="答えを入力">
-                <button onclick="submit()">送信</button>
-            `;
-            showView('view-room');
-        }
-    </script>
+                <button class="btn-main" onclick="submitAnswer()">送信</button>
+            </div>
+            <button id="host-open-btn" class="btn-pink hidden" onclick="hostJudge(true)">回答オープン</button>
+        </div>
+    </div>
+
+    <div id="view-result" class="view hidden" style="padding: 20px;">
+        <h1 id="result-status">結果</h1>
+        <div id="result-list"></div>
+        <button id="next-btn" class="btn-main hidden" onclick="nextRound()" style="margin-top:20px; width:100%;">次の親へ交代</button>
+    </div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="script.js"></script>
 </body>
 </html>

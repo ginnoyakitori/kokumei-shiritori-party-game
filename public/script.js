@@ -1,49 +1,101 @@
-﻿let isHost = false;
+﻿const socket = io();
+let currentRoom = "";
+let isHost = false;
+
+function showView(id) {
+    document.querySelectorAll('.view').forEach(v => v.classList.add('hidden'));
+    document.getElementById(id).classList.remove('hidden');
+}
+
+function join() {
+    const name = document.getElementById('input-name').value;
+    currentRoom = document.getElementById('input-room').value;
+    if (!name || !currentRoom) return alert("入力してください");
+    socket.emit('join-room', { name, rid: currentRoom });
+}
 
 socket.on('room-data', (data) => {
-    isHost = (socket.id === data.hostId); // 自分がホストか保持
-    // ...（中略：メンバーリスト表示など）
-});
+    isHost = (socket.id === data.hostId);
+    document.getElementById('display-room')?.innerText; // 予備
+    
+    // グリッドUIの更新
+    const memberList = document.getElementById('member-list');
+    memberList.innerHTML = data.members.map(m => `
+        <div class="player-card ${m.isReady ? 'ready' : ''}">
+            <div class="status-text">${m.isReady ? 'Ready' : 'READY'}</div>
+            <div class="player-name">${m.name}</div>
+        </div>
+    `).join('');
 
-// サーバーから「全員揃った」通知が来たら（ホストのみ受信）
-socket.on('all-answered-notification', () => {
+    // ホスト権限のUI制御
+    const qArea = document.getElementById('question-area');
+    const hostQInput = document.getElementById('host-q-input');
+    const playerAnsInput = document.getElementById('player-ans-input');
+    const openBtn = document.getElementById('host-open-btn');
+
     if (isHost) {
-        // ホストの画面に「判定ボタン」を出すなどの演出
-        alert("全員の回答が揃いました！判定してください。");
+        const allReady = data.members.every(m => m.isReady);
+        // 全員揃ったらオープンボタン、そうでなければお題入力
+        if (allReady && data.members.length > 0) {
+            openBtn.classList.remove('hidden');
+            hostQInput.classList.add('hidden');
+            playerAnsInput.classList.add('hidden');
+        } else {
+            openBtn.classList.add('hidden');
+            hostQInput.classList.remove('hidden');
+            playerAnsInput.classList.add('hidden');
+        }
+    } else {
+        // 子はお題を待つか回答するか
+        hostQInput.classList.add('hidden');
+        openBtn.classList.add('hidden');
     }
+
+    if(!document.getElementById('view-lobby').classList.contains('hidden')) showView('view-game');
 });
 
-// ホストが判定ボタンを押す関数
+function sendQuestion() {
+    const q = document.getElementById('input-question').value;
+    if (!q) return alert("お題を入力してください");
+    socket.emit('send-question', { rid: currentRoom, question: q });
+}
+
+socket.on('receive-question', (data) => {
+    document.getElementById('question-area').innerText = `「${data.question}」といえば？`;
+    // お題が出たら回答入力欄を表示（親以外）
+    if (!isHost) {
+        document.getElementById('player-ans-input').classList.remove('hidden');
+    }
+    showView('view-game');
+});
+
+function submitAnswer() {
+    const ans = document.getElementById('input-answer').value;
+    socket.emit('submit-answer', { rid: currentRoom, answer: ans });
+    document.getElementById('player-ans-input').classList.add('hidden');
+}
+
 function hostJudge(isMatch) {
-    socket.emit('host-judge', { rid: currentRoom, isMatch: isMatch });
+    socket.emit('host-judge', { rid: currentRoom, isMatch });
 }
 
 socket.on('show-result', (data) => {
     showView('view-result');
     const status = document.getElementById('result-status');
-    const resultList = document.getElementById('result-list');
-
-    status.innerText = data.isMatch ? "🎉 全員一致！" : "🤔 不一致...";
-    status.style.color = data.isMatch ? "#28a745" : "#dc3545";
-
-    // 回答リストを表示（ホストはこのリストを見て判定する）
-    resultList.innerHTML = data.results.map(r => 
-        `<li><strong>${r.name}:</strong> ${r.answer}</li>`
+    status.innerText = data.isMatch ? "✨ 全員一致 ✨" : "❌ 不一致 ❌";
+    document.getElementById('result-list').innerHTML = data.results.map(r => 
+        `<div class="result-item"><strong>${r.name}:</strong> ${r.answer}</div>`
     ).join('');
+    if (isHost) document.getElementById('next-btn').classList.remove('hidden');
+});
 
-    // 【追加】ホストだけに判定ボタンを表示する（まだ判定前の場合）
-    if (isHost) {
-        // 結果表示画面の下に判定用UIを差し込む
-        const judgeUI = `
-            <div id="host-controls">
-                <p>ホスト判定：</p>
-                <button onclick="hostJudge(true)" style="background:green">一致（成功）</button>
-                <button onclick="hostJudge(false)" style="background:red">不一致（失敗）</button>
-            </div>
-        `;
-        // すでにボタンがあれば追加しない
-        if(!document.getElementById('host-controls')) {
-            resultList.insertAdjacentHTML('afterend', judgeUI);
-        }
-    }
+function nextRound() {
+    socket.emit('next-round', { rid: currentRoom });
+}
+
+socket.on('prepare-next-round', () => {
+    document.getElementById('input-answer').value = "";
+    document.getElementById('input-question').value = "";
+    document.getElementById('question-area').innerText = "お題を入力してください";
+    showView('view-game');
 });
