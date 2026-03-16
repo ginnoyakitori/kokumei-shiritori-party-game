@@ -1,45 +1,106 @@
-﻿<!doctype html>
+﻿<!DOCTYPE html>
 <html lang="ja">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>全員一致ゲーム</title>
-    <link rel="stylesheet" href="style.css" />
-  </head>
-  <body>
-    <main class="app-shell">
-      <header class="hero">
-        <h1>全員一致ゲーム</h1>
-        <p class="subtitle">全員で同じ回答を目指そう！</p>
-      </header>
+    <style>
+        body { font-family: sans-serif; text-align: center; background: #f0f4f8; padding: 20px; }
+        .card { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); max-width: 400px; margin: auto; }
+        .hidden { display: none; }
+        input { width: 80%; padding: 10px; margin: 10px 0; border: 1px solid #ccc; border-radius: 5px; }
+        button { padding: 10px 20px; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; }
+        button:hover { background: #0056b3; }
+        ul { list-style: none; padding: 0; }
+        li { background: #eee; margin: 5px 0; padding: 8px; border-radius: 4px; }
+        #result-status { font-size: 1.5rem; font-weight: bold; }
+    </style>
+</head>
+<body>
 
-      <section class="panel">
-        <div class="row">
-          <input id="playerName" type="text" placeholder="あなたの名前" maxlength="15" />
+    <div class="card">
+        <div id="view-lobby">
+            <h1>ロビー</h1>
+            <input type="text" id="input-name" placeholder="あなたの名前">
+            <input type="text" id="input-room" placeholder="ルーム番号">
+            <button onclick="join()">入室</button>
         </div>
-        <div id="topicSection" class="row stacked-mobile">
-          <input id="topicInput" type="text" placeholder="お題を入力（例：おにぎりの具といえば？）" />
-          <button id="startRoundBtn">お題を出す</button>
-        </div>
-        <div class="topic-display">
-          <h2 id="currentTopic">お題を待機中...</h2>
-        </div>
-      </section>
 
-      <section class="panel">
-        <div id="inputArea" class="row">
-          <input id="myAnswer" type="text" placeholder="あなたの回答" />
-          <button id="sendAnswerBtn">回答を送信</button>
+        <div id="view-room" class="hidden">
+            <h2>ルーム: <span id="display-room"></span></h2>
+            <p>参加メンバー:</p>
+            <ul id="member-list"></ul>
+            <p>全員揃ったら回答を始めてください</p>
+            <button onclick="showGame()">回答画面へ</button>
         </div>
-        <div id="answerStatus" class="status-grid">
-          </div>
-        <div class="actions">
-          <button id="revealBtn" class="primary" disabled>全員の回答を公開！</button>
-        </div>
-      </section>
 
-      <section id="resultArea" class="result-grid"></section>
-    </main>
-    <script src="app.js"></script>
-  </body>
+        <div id="view-game" class="hidden">
+            <h2>お題：赤い果物といえば？</h2>
+            <input type="text" id="input-answer" placeholder="答えを入力">
+            <button onclick="submit()">送信</button>
+        </div>
+
+        <div id="view-result" class="hidden">
+            <div id="result-status"></div>
+            <ul id="result-list"></ul>
+            <button onclick="resetUI()">次のお題へ</button>
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+        let currentRoom = "";
+
+        function showView(id) {
+            ["view-lobby", "view-room", "view-game", "view-result"].forEach(v => {
+                document.getElementById(v).classList.add('hidden');
+            });
+            document.getElementById(id).classList.remove('hidden');
+        }
+
+        function join() {
+            const name = document.getElementById('input-name').value;
+            currentRoom = document.getElementById('input-room').value;
+            if(!name || !currentRoom) return alert("入力してください");
+            socket.emit('join-room', { name, rid: currentRoom });
+        }
+
+        socket.on('room-data', (data) => {
+            document.getElementById('display-room').innerText = data.rid;
+            document.getElementById('member-list').innerHTML = data.members.map(m => `<li>${m}</li>`).join('');
+            if(document.getElementById('view-lobby').className !== 'hidden') showView('view-room');
+        });
+
+        function showGame() { showView('view-game'); }
+
+        function submit() {
+            const answer = document.getElementById('input-answer').value;
+            if(!answer) return alert("入力してください");
+            socket.emit('submit-answer', { rid: currentRoom, answer });
+            document.getElementById('view-game').innerHTML = "<h3>他の人を待っています...</h3>";
+        }
+
+        socket.on('show-result', (data) => {
+            showView('view-result');
+            const status = document.getElementById('result-status');
+            status.innerText = data.isMatch ? "🎉 全員一致！" : "🤔 不一致...";
+            status.style.color = data.isMatch ? "#28a745" : "#dc3545";
+            
+            document.getElementById('result-list').innerHTML = data.results.map(r => 
+                `<li><strong>${r.name}:</strong> ${r.answer}</li>`
+            ).join('');
+        });
+
+        function resetUI() {
+            document.getElementById('input-answer').value = "";
+            document.getElementById('view-game').innerHTML = `
+                <h2>お題：赤い果物といえば？</h2>
+                <input type="text" id="input-answer" placeholder="答えを入力">
+                <button onclick="submit()">送信</button>
+            `;
+            showView('view-room');
+        }
+    </script>
+</body>
 </html>

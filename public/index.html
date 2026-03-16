@@ -1,45 +1,67 @@
-﻿<!doctype html>
+﻿<!DOCTYPE html>
 <html lang="ja">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>全員一致ゲーム</title>
-    <link rel="stylesheet" href="style/style.css" />
-  </head>
-  <body>
-    <main class="app-shell">
-      <header class="hero">
+    <style>
+        body { font-family: 'Helvetica Neue', Arial, sans-serif; background: #eef2f7; display: flex; justify-content: center; padding: 20px; }
+        .card { background: white; width: 100%; max-width: 450px; padding: 30px; border-radius: 15px; box-shadow: 0 10px 25px rgba(0,0,0,0.1); text-align: center; }
+        .hidden { display: none; }
+        input { width: 90%; padding: 12px; margin: 10px 0; border: 2px solid #ddd; border-radius: 8px; font-size: 16px; }
+        button { width: 95%; padding: 12px; margin: 10px 0; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; transition: 0.3s; }
+        .btn-main { background: #007bff; color: white; }
+        .btn-sub { background: #28a745; color: white; }
+        .btn-judge-ok { background: #ff9800; color: white; width: 45%; }
+        .btn-judge-ng { background: #f44336; color: white; width: 45%; }
+        ul { list-style: none; padding: 0; text-align: left; }
+        li { background: #f9f9f9; padding: 10px; margin-bottom: 5px; border-radius: 5px; border-left: 5px solid #007bff; }
+    </style>
+</head>
+<body>
+
+<div class="card">
+    <div id="view-lobby">
         <h1>全員一致ゲーム</h1>
-        <p class="subtitle">全員で同じ回答を目指そう！</p>
-      </header>
+        <input type="text" id="input-name" placeholder="名前">
+        <input type="text" id="input-room" placeholder="部屋番号">
+        <button class="btn-main" onclick="join()">部屋に入る</button>
+    </div>
 
-      <section class="panel">
-        <div class="row">
-          <input id="playerName" type="text" placeholder="あなたの名前" maxlength="15" />
+    <div id="view-room" class="hidden">
+        <h2>部屋: <span id="display-room"></span></h2>
+        <p id="host-info" style="color: #007bff; font-weight: bold;"></p>
+        <p>参加者一覧</p>
+        <ul id="member-list"></ul>
+        <div id="host-question-area" class="hidden">
+            <input type="text" id="input-question" placeholder="お題を入力してください">
+            <button class="btn-sub" onclick="sendQuestion()">お題を出す</button>
         </div>
-        <div id="topicSection" class="row stacked-mobile">
-          <input id="topicInput" type="text" placeholder="お題を入力（例：おにぎりの具といえば？）" />
-          <button id="startRoundBtn">お題を出す</button>
-        </div>
-        <div class="topic-display">
-          <h2 id="currentTopic">お題を待機中...</h2>
-        </div>
-      </section>
+        <p id="wait-msg">お題入力を待っています...</p>
+    </div>
 
-      <section class="panel">
-        <div id="inputArea" class="row">
-          <input id="myAnswer" type="text" placeholder="あなたの回答" />
-          <button id="sendAnswerBtn">回答を送信</button>
+    <div id="view-game" class="hidden">
+        <h2 id="question-text">お題</h2>
+        <div id="answer-input-area">
+            <input type="text" id="input-answer" placeholder="答えは？">
+            <button class="btn-main" onclick="submitAnswer()">回答を送信</button>
         </div>
-        <div id="answerStatus" class="status-grid">
-          </div>
-        <div class="actions">
-          <button id="revealBtn" class="primary" disabled>全員の回答を公開！</button>
-        </div>
-      </section>
+        <p id="submitting-msg" class="hidden">全員の回答を待っています...</p>
+    </div>
 
-      <section id="resultArea" class="result-grid"></section>
-    </main>
-    <script src="app/app.js"></script>
-  </body>
+    <div id="view-result" class="hidden">
+        <h1 id="result-status"></h1>
+        <ul id="result-list"></ul>
+        <div id="host-judge-controls" class="hidden">
+            <p>ホスト判定：</p>
+            <button class="btn-judge-ok" onclick="hostJudge(true)">一致！</button>
+            <button class="btn-judge-ng" onclick="hostJudge(false)">不一致</button>
+        </div>
+        <button id="next-btn" class="btn-main hidden" onclick="nextRound()">次のお題担当へ</button>
+    </div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="script.js"></script>
+</body>
 </html>
