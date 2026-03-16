@@ -151,14 +151,10 @@ font-size: 1.2rem;
 
 const socket = io();
 
-let rid = localStorage.getItem('game_room_id') || "";
+let rid = "";
 let isHost = false;
 
-let joining = false;
-let manualLeave = false;
-
 let userId = localStorage.getItem('game_user_id');
-
 if(!userId){
 userId = "user_" + Math.random().toString(36).slice(2);
 localStorage.setItem("game_user_id",userId);
@@ -171,14 +167,10 @@ document.getElementById(id).classList.remove('hidden');
 
 function join(){
 
-if(joining) return;
-
 const name=document.getElementById('input-name').value;
 rid=document.getElementById('input-room').value;
 
-if(!name||!rid) return;
-
-joining=true;
+if(!name||!rid) return alert("名前と部屋番号を入力してください");
 
 localStorage.setItem('game_user_name',name);
 localStorage.setItem('game_room_id',rid);
@@ -187,8 +179,6 @@ socket.emit('join-room',{name,rid,userId});
 }
 
 socket.on('connect',()=>{
-
-if(manualLeave) return;
 
 const savedName=localStorage.getItem('game_user_name');
 const savedRid=localStorage.getItem('game_room_id');
@@ -209,8 +199,6 @@ userId
 
 socket.on('room-data',(data)=>{
 
-joining=false;
-
 isHost=(userId===data.hostId);
 
 document.getElementById('header-text').innerText=`部屋: ${data.rid}`;
@@ -228,23 +216,6 @@ ${m.isOnline?'':' <small>(離脱中)</small>'}
 document.getElementById('all-member-list').innerHTML=waitHtml;
 document.getElementById('typing-member-list').innerHTML=waitHtml;
 
-const gameHtml=data.readyMembers.map(m=>`
-<div class="player-card">
-<div class="order-badge">${m.order}</div>
-<div>${m.name}</div>
-<div class="ready-tag">READY</div>
-</div>
-`).join('');
-
-document.getElementById('game-ready-list').innerHTML=gameHtml;
-
-const allReady=(data.readyMembers.length===data.totalMemberCount && data.totalMemberCount>0);
-
-if(isHost && allReady)
-document.getElementById('open-btn').classList.remove('hidden');
-else
-document.getElementById('open-btn').classList.add('hidden');
-
 if(isHost && data.status==='waiting')
 document.getElementById('host-start-btn').classList.remove('hidden');
 else
@@ -256,9 +227,18 @@ function goToSetup(){
 socket.emit('go-to-setup',{rid});
 }
 
+socket.on('move-to-setup',()=>{
+if(isHost) show('view-setup');
+else show('view-typing');
+});
+
 function backToWaiting(){
 socket.emit('back-to-waiting',{rid});
 }
+
+socket.on('move-to-waiting',()=>{
+show('view-wait-room');
+});
 
 function startGame(){
 
@@ -327,30 +307,15 @@ else show('view-typing');
 
 function leaveRoom(){
 
-manualLeave=true;
-
 socket.emit('leave-room',{rid,userId});
 
 localStorage.removeItem('game_room_id');
 
-}
-
-socket.on('left-success',()=>{
-
 location.reload();
 
-});
+}
 
 socket.on('error-msg',(msg)=>alert(msg));
-
-window.onload=()=>{
-
-const savedName=localStorage.getItem('game_user_name');
-
-if(savedName)
-document.getElementById('input-name').value=savedName;
-
-};
 
 </script>
 
