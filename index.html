@@ -5,28 +5,24 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>全員一致ゲーム</title>
     <style>
-        body { font-family: 'Helvetica Neue', Arial, sans-serif; background: #fdfde3; margin: 0; display: flex; justify-content: center; }
-        .app-container { width: 100%; max-width: 450px; background: #f0f8ff; min-height: 100vh; position: relative; overflow-x: hidden; }
-        .header { background: #6a0dad; color: white; padding: 15px; font-weight: bold; text-align: center; font-size: 1.1rem; }
+        body { font-family: sans-serif; background: #fdfde3; margin: 0; display: flex; justify-content: center; }
+        .app-container { width: 100%; max-width: 450px; background: #f0f8ff; min-height: 100vh; position: relative; }
+        .header { background: #6a0dad; color: white; padding: 15px; font-weight: bold; text-align: center; }
         .hidden { display: none !important; }
         
-        button { border-radius: 30px; border: none; padding: 12px; font-weight: bold; cursor: pointer; font-size: 1rem; transition: 0.2s; }
-        .btn-pink { background: #ff6699; color: white; width: 85%; margin: 20px auto; display: block; box-shadow: 0 4px 0 #d64577; }
-        .btn-pink:active { transform: translateY(2px); box-shadow: none; }
-        .btn-white { background: white; border: 2px solid #999; color: #333; width: 85%; margin: 10px auto; display: block; }
-        .btn-yellow { background: #f9d71c; color: #333; width: 85%; margin: 10px auto; display: block; box-shadow: 0 4px 0 #d4b612; }
+        button { border-radius: 30px; border: none; padding: 12px; font-weight: bold; cursor: pointer; width: 85%; margin: 10px auto; display: block; }
+        .btn-pink { background: #ff6699; color: white; }
+        .btn-yellow { background: #f9d71c; color: #333; }
+        .btn-white { background: white; border: 2px solid #ddd; }
+        .btn-exit { background: #ff4444; color: white; margin-top: 20px; }
 
-        .config-card { background: white; border-radius: 20px; margin: 25px 15px; padding: 25px 15px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); text-align: center; position: relative; }
-        .label-purple { background: #6a0dad; color: white; padding: 5px 25px; border-radius: 20px; position: absolute; top: -15px; left: 50%; transform: translateX(-50%); font-size: 0.9rem; }
-
-        .member-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 15px; margin-bottom: 120px; }
-        .player-card { background: #9c9c9c; border-radius: 15px; padding: 25px 5px; text-align: center; color: white; transition: 0.3s; }
-        .player-card.ready { background: #7a7a7a; border: 3px solid #f9d71c; }
-        .status-ready { font-size: 1.8rem; font-weight: bold; color: #f9d71c; }
-        .status-waiting { font-size: 1.8rem; font-weight: bold; color: #ccc; }
-
-        .footer-input { position: fixed; bottom: 0; width: 100%; max-width: 450px; background: white; padding: 15px 0; border-top: 2px solid #ddd; }
-        input[type="text"] { width: 85%; padding: 12px; border-radius: 20px; border: 2px solid #ddd; display: block; margin: 0 auto 10px; font-size: 1rem; }
+        .config-card { background: white; border-radius: 20px; margin: 20px 15px; padding: 25px 15px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); text-align: center; }
+        .member-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 15px; }
+        .player-card { background: #9c9c9c; border-radius: 15px; padding: 20px 5px; text-align: center; color: white; }
+        .player-card.ready { background: #7a7a7a; border: 2px solid #f9d71c; }
+        
+        input[type="text"] { width: 80%; padding: 12px; border-radius: 20px; border: 2px solid #ddd; margin-bottom: 10px; }
+        .footer-input { position: fixed; bottom: 0; width: 100%; max-width: 450px; background: white; padding: 15px 0; border-top: 1px solid #ddd; }
     </style>
 </head>
 <body>
@@ -36,149 +32,141 @@
 
     <div id="view-lobby" class="view">
         <div style="padding: 60px 20px; text-align: center;">
-            <input type="text" id="input-name" placeholder="あなたの名前">
-            <input type="text" id="input-room" placeholder="部屋番号 (数字)">
-            <button class="btn-yellow" onclick="join()">部屋に入る</button>
+            <input type="text" id="input-name" placeholder="名前">
+            <input type="text" id="input-room" placeholder="部屋番号">
+            <button class="btn-yellow" onclick="join()">入室する</button>
         </div>
+    </div>
+
+    <div id="view-wait-room" class="view hidden">
+        <p style="text-align: center; padding-top: 20px;">待機中... 全員揃ったら開始してください</p>
+        <div id="wait-member-list" class="member-grid"></div>
+        <button id="host-start-btn" class="btn-pink hidden" onclick="goToSetup()">ゲームを開始する</button>
+        <button class="btn-exit" onclick="leaveRoom()">退出する</button>
     </div>
 
     <div id="view-setup" class="view hidden">
-        <p style="text-align: center; padding: 20px 10px 0;">あなたは<b>「お題担当」</b>です。<br>みんなに送るお題を入力してください。</p>
         <div class="config-card">
-            <div class="label-purple">お題を入力</div>
-            <input type="text" id="input-manual-q" placeholder="例：赤い果物といえば？" style="width: 90%;">
-            <p style="font-size: 0.8rem; color: #666;">または</p>
-            <button class="btn-white" onclick="setRandomQuestion()">アプリのお題から選ぶ</button>
+            <h3>お題設定</h3>
+            <input type="text" id="input-manual-q" placeholder="お題を入力">
+            <button class="btn-white" onclick="setRandom()">ランダムお題</button>
         </div>
-        <button class="btn-pink" onclick="startGame()">このお題でスタート！</button>
+        <button class="btn-pink" onclick="startGame()">このお題で配信！</button>
+        <button class="btn-white" onclick="backToWaiting()">終了（待機室へ）</button>
     </div>
 
     <div id="view-game" class="view hidden">
-        <div style="background: white; border: 3px solid #f9d71c; border-radius: 15px; margin: 20px; padding: 25px; font-size: 1.2rem; font-weight: bold; text-align: center;" id="current-q-text"></div>
-        <div id="member-grid" class="member-grid"></div>
-
+        <div style="background:white; border:2px solid #f9d71c; margin:15px; padding:20px; border-radius:15px; text-align:center; font-weight:bold;" id="current-q"></div>
+        <div id="game-member-grid" class="member-grid"></div>
         <div class="footer-input">
-            <div id="ans-input-area">
-                <input type="text" id="input-answer" placeholder="答えを入力してください">
-                <button class="btn-yellow" onclick="submitAnswer()">回答を送信</button>
+            <div id="ans-area">
+                <input type="text" id="input-ans" placeholder="答えは？">
+                <button class="btn-yellow" onclick="submitAns()">送信</button>
             </div>
-            <button id="host-open-btn" class="btn-pink hidden" onclick="openAnswers()">全員の回答を見る</button>
-            <p id="wait-msg" class="hidden" style="text-align: center; color: #666;">他の人の回答を待っています...</p>
+            <button id="open-btn" class="btn-pink hidden" onclick="openAll()">回答オープン</button>
         </div>
     </div>
 
-    <div id="view-result" class="view hidden" style="padding: 20px; text-align: center;">
-        <h2 id="result-status">結果発表</h2>
-        <div id="result-list" style="margin-bottom: 30px;"></div>
-        <button id="next-btn" class="btn-yellow hidden" onclick="nextRound()">次のお題担当へ</button>
+    <div id="view-result" class="view hidden" style="padding:20px; text-align:center;">
+        <h2>結果発表</h2>
+        <div id="result-list"></div>
+        <button id="next-btn" class="btn-yellow hidden" onclick="nextRound()">次の親へ</button>
     </div>
 </div>
 
 <script src="/socket.io/socket.io.js"></script>
 <script>
     const socket = io();
-    let currentRoom = "";
+    let rid = "";
     let isHost = false;
-    let myName = "";
 
-    const randomQs = ["おにぎりの具といえば？", "ドラえもんの道具といえば？", "マクドナルドのメニューといえば？", "赤い果物といえば？", "ジブリ映画といえば？"];
-
-    function showView(id) {
+    function show(id) {
         document.querySelectorAll('.view').forEach(v => v.classList.add('hidden'));
         document.getElementById(id).classList.remove('hidden');
     }
 
     function join() {
-        myName = document.getElementById('input-name').value;
-        currentRoom = document.getElementById('input-room').value;
-        if (!myName || !currentRoom) return alert("名前と部屋番号を入れてね");
-        socket.emit('join-room', { name: myName, rid: currentRoom });
+        const name = document.getElementById('input-name').value;
+        rid = document.getElementById('input-room').value;
+        if(name && rid) socket.emit('join-room', { name, rid });
     }
+
+    socket.on('error-msg', (msg) => alert(msg));
+    socket.on('left-success', () => location.reload());
 
     socket.on('room-data', (data) => {
         isHost = (socket.id === data.hostId);
         document.getElementById('header-text').innerText = `部屋: ${data.rid}`;
         
-        const grid = document.getElementById('member-grid');
-        grid.innerHTML = data.members.map(m => `
+        // 待機リストとゲームリスト両方を更新
+        const html = data.members.map(m => `
             <div class="player-card ${m.isReady ? 'ready' : ''}">
-                <div class="${m.isReady ? 'status-ready' : 'status-waiting'}">${m.isReady ? 'Ready' : 'READY'}</div>
-                <div style="font-size:0.8rem; margin-top:5px;">${m.name}</div>
+                <div>${m.isReady ? 'Ready' : '...'}</div>
+                <div style="font-size:0.8rem;">${m.name}</div>
             </div>
         `).join('');
+        document.getElementById('wait-member-list').innerHTML = html;
+        document.getElementById('game-member-grid').innerHTML = html;
 
-        if (!document.getElementById('view-lobby').classList.contains('hidden')) {
-            if (isHost) showView('view-setup');
-            else showView('view-game');
-        }
+        // ホストなら開始ボタンを表示
+        if(isHost && data.status === 'waiting') document.getElementById('host-start-btn').classList.remove('hidden');
+        else document.getElementById('host-start-btn').classList.add('hidden');
 
-        // ホスト用：全員Readyならオープンボタンを表示
-        const allReady = data.members.length > 0 && data.members.every(m => m.isReady);
-        const openBtn = document.getElementById('host-open-btn');
-        const waitMsg = document.getElementById('wait-msg');
-        
-        if (isHost && allReady) {
-            openBtn.classList.remove('hidden');
-            waitMsg.classList.add('hidden'); // 全員揃ったら待機メッセージを消してボタンに
-        } else {
-            openBtn.classList.add('hidden');
+        // 回答オープンボタン
+        const allReady = data.members.every(m => m.isReady);
+        if(isHost && allReady) document.getElementById('open-btn').classList.remove('hidden');
+        else document.getElementById('open-btn').classList.add('hidden');
+
+        // 初回入室時
+        if(!document.getElementById('view-lobby').classList.contains('hidden')) {
+            show('view-wait-room');
         }
     });
 
-    function setRandomQuestion() {
-        document.getElementById('input-manual-q').value = randomQs[Math.floor(Math.random() * randomQs.length)];
-    }
+    function goToSetup() { socket.emit('go-to-setup', { rid }); }
+    socket.on('move-to-setup', () => { if(isHost) show('view-setup'); });
+
+    function backToWaiting() { socket.emit('back-to-waiting', { rid }); }
+    socket.on('move-to-waiting', () => { show('view-wait-room'); });
 
     function startGame() {
         const q = document.getElementById('input-manual-q').value;
-        if (!q) return alert("お題を入力してください");
-        socket.emit('send-question', { rid: currentRoom, question: q });
+        if(q) socket.emit('send-question', { rid, question: q });
     }
 
     socket.on('receive-question', (data) => {
-        document.getElementById('current-q-text').innerText = `お題：${data.question}`;
-        // 親も子も、まず回答入力欄を表示する
-        document.getElementById('ans-input-area').classList.remove('hidden');
-        document.getElementById('wait-msg').classList.add('hidden');
-        showView('view-game');
+        document.getElementById('current-q').innerText = `お題：${data.question}`;
+        document.getElementById('ans-area').classList.remove('hidden');
+        show('view-game');
     });
 
-    function submitAnswer() {
-        const ans = document.getElementById('input-answer').value;
-        if (!ans) return alert("答えを書いてね");
-        socket.emit('submit-answer', { rid: currentRoom, answer: ans });
-        document.getElementById('ans-input-area').classList.add('hidden');
-        document.getElementById('wait-msg').classList.remove('hidden');
+    function submitAns() {
+        const ans = document.getElementById('input-ans').value;
+        socket.emit('submit-answer', { rid, answer: ans });
+        document.getElementById('ans-area').classList.add('hidden');
     }
 
-    function openAnswers() {
-        socket.emit('host-judge', { rid: currentRoom, isMatch: true });
-    }
-
+    function openAll() { socket.emit('host-judge', { rid, isMatch: true }); }
+    
     socket.on('show-result', (data) => {
-        showView('view-result');
+        show('view-result');
         document.getElementById('result-list').innerHTML = data.results.map(r => `
-            <div style="background:white; padding:15px; margin:10px 0; border-radius:10px; border-left:8px solid #6a0dad; text-align:left;">
+            <div style="background:white; padding:10px; margin:5px; border-radius:10px; text-align:left;">
                 <b>${r.name}</b>: ${r.answer}
             </div>
         `).join('');
-        if (isHost) document.getElementById('next-btn').classList.remove('hidden');
+        if(isHost) document.getElementById('next-btn').classList.remove('hidden');
     });
 
-    function nextRound() {
-        socket.emit('next-round', { rid: currentRoom });
-    }
-
+    function nextRound() { socket.emit('next-round', { rid }); }
     socket.on('prepare-next-round', () => {
-        document.getElementById('input-answer').value = "";
-        document.getElementById('input-manual-q').value = "";
-        document.getElementById('wait-msg').classList.add('hidden');
-        if (isHost) showView('view-setup');
-        else {
-            document.getElementById('current-q-text').innerText = "お題を待っています...";
-            showView('view-game');
-        }
+        document.getElementById('input-ans').value = "";
+        if(isHost) show('view-setup');
+        else show('view-game');
     });
+
+    function leaveRoom() { socket.emit('leave-room', { rid }); }
+    function setRandom() { document.getElementById('input-manual-q').value = "おにぎりの具といえば？"; }
 </script>
 </body>
 </html>
