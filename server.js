@@ -10,65 +10,71 @@ app.use(express.static(__dirname));
 
 const rooms = {};
 
-/**
- * 部屋の最新状態を全メンバーに送信する
- */
+// 部屋の状態を全員に同期する関数
 function updateRoomData(rid) {
     const room = rooms[rid];
     if (!room) return;
     
     const host = room.members[room.turnIndex];
     
-    // 1. 全員のリスト (待機画面用)
+    // 全員のリスト (接続が切れている人も含めて保持)
     const allMembers = room.members.map(m => ({
         id: m.id,
         name: m.name,
-        isHost: m.id === (host ? host.id : null)
+        isHost: m.id === (host ? host.id : null),
+        isOnline: !!m.socketId // 接続中かどうかのフラグ
     }));
 
-    // 2. 回答済みのプレイヤーを抽出して提出順(readyAt)にソート (ゲーム画面用)
+    // 回答済みのプレイヤーを提出順にソート
     const readyPlayers = room.members
         .filter(m => m.answer !== null)
         .sort((a, b) => a.readyAt - b.readyAt)
         .map((m, index) => ({
             name: m.name,
-            order: index + 1 // 提出順位
+            order: index + 1
         }));
 
     io.to(rid).emit('room-data', {
         rid,
-        allMembers: allMembers,       // 全員の名簿
-        readyMembers: readyPlayers,   // 回答済みの人のみ（提出順）
+        allMembers,
+        readyMembers: readyPlayers,
         totalMemberCount: room.members.length,
-        hostId: host ? host.id : null,
-        status: room.status // 'waiting' か 'playing'
+        status: room.status,
+        hostId: host ? host.id : null
     });
 }
 
 io.on('connection', (socket) => {
-    // --- 入室処理 ---
-    socket.on('join-room', ({ name, rid }) => {
+    // 入室・再入室処理
+    socket.on('join-room', ({ name, rid, userId }) => {
         if (!rooms[rid]) {
             rooms[rid] = { turnIndex: 0, members: [], status: 'waiting' };
         }
 
-        // ゲーム進行中の場合は、既存メンバー以外の入室を拒否
-        const isExisting = rooms[rid].members.find(m => m.id === socket.id);
-        if (rooms[rid].status === 'playing' && !isExisting) {
-            return socket.emit('error-msg', '現在ゲーム進行中のため入室できません。');
+        let player = rooms[rid].members.find(m => m.id === userId);
+
+        if (player) {
+            // 再接続の場合：新しいSocketIDを紐付け直す
+            player.socketId = socket.id;
+            // 名前が変更されている場合は更新
+            if (name) player.name = name;
+        } else {
+            // 新規入室：進行中の場合は拒否
+            if (rooms[rid].status === 'playing') {
+                return socket.emit('error-msg', '現在ゲーム進行中のため入室できません。');
+            }
+            player = { id: userId, socketId: socket.id, name, answer: null, readyAt: null };
+            rooms[rid].members.push(player);
         }
 
         socket.join(rid);
-        if (!isExisting) {
-            rooms[rid].members.push({ id: socket.id, name, answer: null, readyAt: null });
-        }
         updateRoomData(rid);
     });
 
-    // --- 画面遷移コントロール ---
+    // 画面遷移
     socket.on('go-to-setup', ({ rid }) => {
         if (rooms[rid]) {
-            rooms[rid].status = 'playing'; // 入室制限開始
+            rooms[rid].status = 'playing';
             io.to(rid).emit('move-to-setup');
             updateRoomData(rid);
         }
@@ -76,77 +82,79 @@ io.on('connection', (socket) => {
 
     socket.on('back-to-waiting', ({ rid }) => {
         if (rooms[rid]) {
-            rooms[rid].status = 'waiting'; // 入室制限解除
+            rooms[rid].status = 'waiting';
             io.to(rid).emit('move-to-waiting');
             updateRoomData(rid);
         }
     });
 
-    // --- ゲームロジック ---
     socket.on('send-question', ({ rid, question }) => {
         io.to(rid).emit('receive-question', { question });
     });
 
-    socket.on('submit-answer', ({ rid, answer }) => {
+    // 回答送信
+    socket.on('submit-answer', ({ rid, userId, answer }) => {
         const room = rooms[rid];
         if (room) {
-            const player = room.members.find(p => p.id === socket.id);
+            const player = room.members.find(p => p.id === userId);
             if (player && player.answer === null) {
                 player.answer = answer;
-                player.readyAt = Date.now(); // 提出した瞬間のサーバー時刻を記録
+                player.readyAt = Date.now();
             }
             updateRoomData(rid);
         }
     });
 
-    socket.on('host-judge', ({ rid, isMatch }) => {
+    // 結果表示
+    socket.on('host-judge', ({ rid }) => {
         const room = rooms[rid];
         if (!room) return;
         const results = room.members.map(p => ({ name: p.name, answer: p.answer }));
-        io.to(rid).emit('show-result', { isMatch, results });
+        io.to(rid).emit('show-result', { results });
     });
 
+    // 次のラウンドへ
     socket.on('next-round', ({ rid }) => {
         const room = rooms[rid];
         if (!room) return;
-        // 次の親（ホスト）へ交代
         room.turnIndex = (room.turnIndex + 1) % room.members.length;
-        // 全員の回答をリセット
-        room.members.forEach(p => { 
-            p.answer = null; 
-            p.readyAt = null; 
-        });
+        room.members.forEach(p => { p.answer = null; p.readyAt = null; });
         updateRoomData(rid);
         io.to(rid).emit('prepare-next-round');
     });
 
-    // --- 退出・切断処理 ---
-    const handleLeave = (socket, rid) => {
-        if (!rooms[rid]) return;
-        rooms[rid].members = rooms[rid].members.filter(p => p.id !== socket.id);
-        socket.leave(rid);
-        
-        if (rooms[rid].members.length === 0) {
-            delete rooms[rid];
-        } else {
-            rooms[rid].turnIndex = rooms[rid].turnIndex % rooms[rid].members.length;
-            updateRoomData(rid);
+    // 退出処理
+    socket.on('leave-room', ({ rid, userId }) => {
+        if (rooms[rid]) {
+            rooms[rid].members = rooms[rid].members.filter(p => p.id !== userId);
+            if (rooms[rid].members.length === 0) delete rooms[rid];
+            else {
+                rooms[rid].turnIndex = rooms[rid].turnIndex % rooms[rid].members.length;
+                updateRoomData(rid);
+            }
         }
-    };
-
-    socket.on('leave-room', ({ rid }) => {
-        handleLeave(socket, rid);
         socket.emit('left-success');
     });
 
+    // 切断時（ページを閉じた・アプリを切り替えた）
     socket.on('disconnect', () => {
         for (const rid in rooms) {
-            handleLeave(socket, rid);
+            const player = rooms[rid].members.find(m => m.socketId === socket.id);
+            if (player) {
+                player.socketId = null; // SocketIDだけ消して、データは保持
+                // 10分間戻ってこなければ完全に削除する（メモリ解放のため）
+                setTimeout(() => {
+                    if (rooms[rid] && !player.socketId) {
+                        rooms[rid].members = rooms[rid].members.filter(m => m.id !== player.id);
+                        if (rooms[rid].members.length === 0) delete rooms[rid];
+                        else updateRoomData(rid);
+                    }
+                }, 600000); 
+                updateRoomData(rid);
+            }
         }
     });
 });
 
 const PORT = process.env.PORT || 10000;
-server.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server is running on port ${PORT}`);
-});
+server.listen(PORT, '0.0.0.0');
