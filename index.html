@@ -10,25 +10,21 @@
         .header { background: #6a0dad; color: white; padding: 15px; font-weight: bold; text-align: center; font-size: 1.1rem; }
         .hidden { display: none !important; }
         
-        /* ボタン */
         button { border-radius: 30px; border: none; padding: 12px; font-weight: bold; cursor: pointer; font-size: 1rem; transition: 0.2s; }
         .btn-pink { background: #ff6699; color: white; width: 85%; margin: 20px auto; display: block; box-shadow: 0 4px 0 #d64577; }
         .btn-pink:active { transform: translateY(2px); box-shadow: none; }
         .btn-white { background: white; border: 2px solid #999; color: #333; width: 85%; margin: 10px auto; display: block; }
         .btn-yellow { background: #f9d71c; color: #333; width: 85%; margin: 10px auto; display: block; box-shadow: 0 4px 0 #d4b612; }
 
-        /* カードデザイン */
         .config-card { background: white; border-radius: 20px; margin: 25px 15px; padding: 25px 15px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); text-align: center; position: relative; }
         .label-purple { background: #6a0dad; color: white; padding: 5px 25px; border-radius: 20px; position: absolute; top: -15px; left: 50%; transform: translateX(-50%); font-size: 0.9rem; }
 
-        /* 回答グリッド */
-        .member-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 15px; }
+        .member-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 15px; margin-bottom: 120px; }
         .player-card { background: #9c9c9c; border-radius: 15px; padding: 25px 5px; text-align: center; color: white; transition: 0.3s; }
         .player-card.ready { background: #7a7a7a; border: 3px solid #f9d71c; }
         .status-ready { font-size: 1.8rem; font-weight: bold; color: #f9d71c; }
         .status-waiting { font-size: 1.8rem; font-weight: bold; color: #ccc; }
 
-        /* 入力エリア */
         .footer-input { position: fixed; bottom: 0; width: 100%; max-width: 450px; background: white; padding: 15px 0; border-top: 2px solid #ddd; }
         input[type="text"] { width: 85%; padding: 12px; border-radius: 20px; border: 2px solid #ddd; display: block; margin: 0 auto 10px; font-size: 1rem; }
     </style>
@@ -48,21 +44,17 @@
 
     <div id="view-setup" class="view hidden">
         <p style="text-align: center; padding: 20px 10px 0;">あなたは<b>「お題担当」</b>です。<br>みんなに送るお題を入力してください。</p>
-        
         <div class="config-card">
             <div class="label-purple">お題を入力</div>
             <input type="text" id="input-manual-q" placeholder="例：赤い果物といえば？" style="width: 90%;">
             <p style="font-size: 0.8rem; color: #666;">または</p>
             <button class="btn-white" onclick="setRandomQuestion()">アプリのお題から選ぶ</button>
-            <div id="display-selected-q" style="margin-top: 10px; font-weight: bold; color: #6a0dad;"></div>
         </div>
-
         <button class="btn-pink" onclick="startGame()">このお題でスタート！</button>
     </div>
 
     <div id="view-game" class="view hidden">
         <div style="background: white; border: 3px solid #f9d71c; border-radius: 15px; margin: 20px; padding: 25px; font-size: 1.2rem; font-weight: bold; text-align: center;" id="current-q-text"></div>
-        
         <div id="member-grid" class="member-grid"></div>
 
         <div class="footer-input">
@@ -89,7 +81,7 @@
     let isHost = false;
     let myName = "";
 
-    const randomQs = ["おにぎりの具といえば？", "ドラえもんの道具といえば？", "マクドナルドのメニューといえば？", "日本を代表する山といえば？"];
+    const randomQs = ["おにぎりの具といえば？", "ドラえもんの道具といえば？", "マクドナルドのメニューといえば？", "赤い果物といえば？", "ジブリ映画といえば？"];
 
     function showView(id) {
         document.querySelectorAll('.view').forEach(v => v.classList.add('hidden'));
@@ -107,7 +99,6 @@
         isHost = (socket.id === data.hostId);
         document.getElementById('header-text').innerText = `部屋: ${data.rid}`;
         
-        // グリッド更新
         const grid = document.getElementById('member-grid');
         grid.innerHTML = data.members.map(m => `
             <div class="player-card ${m.isReady ? 'ready' : ''}">
@@ -116,22 +107,26 @@
             </div>
         `).join('');
 
-        // ビュー制御
         if (!document.getElementById('view-lobby').classList.contains('hidden')) {
             if (isHost) showView('view-setup');
             else showView('view-game');
         }
 
-        // オープンボタン制御
+        // ホスト用：全員Readyならオープンボタンを表示
         const allReady = data.members.length > 0 && data.members.every(m => m.isReady);
         const openBtn = document.getElementById('host-open-btn');
-        if (isHost && allReady) openBtn.classList.remove('hidden');
-        else openBtn.classList.add('hidden');
+        const waitMsg = document.getElementById('wait-msg');
+        
+        if (isHost && allReady) {
+            openBtn.classList.remove('hidden');
+            waitMsg.classList.add('hidden'); // 全員揃ったら待機メッセージを消してボタンに
+        } else {
+            openBtn.classList.add('hidden');
+        }
     });
 
     function setRandomQuestion() {
-        const q = randomQs[Math.floor(Math.random() * randomQs.length)];
-        document.getElementById('input-manual-q').value = q;
+        document.getElementById('input-manual-q').value = randomQs[Math.floor(Math.random() * randomQs.length)];
     }
 
     function startGame() {
@@ -142,8 +137,9 @@
 
     socket.on('receive-question', (data) => {
         document.getElementById('current-q-text').innerText = `お題：${data.question}`;
-        document.getElementById('ans-input-area').classList.toggle('hidden', isHost);
-        document.getElementById('wait-msg').classList.toggle('hidden', !isHost);
+        // 親も子も、まず回答入力欄を表示する
+        document.getElementById('ans-input-area').classList.remove('hidden');
+        document.getElementById('wait-msg').classList.add('hidden');
         showView('view-game');
     });
 
