@@ -15,12 +15,21 @@ function updateRoomData(rid) {
     if (!room) return;
     
     const host = room.members[room.turnIndex];
-    // 各プレイヤーの「名前」と「回答済みか(isReady)」を送信
-    const membersData = room.members.map(m => ({
-        id: m.id,
-        name: m.name,
-        isReady: m.answer !== null
-    }));
+    // 回答済みの人たちを抽出して、回答した時刻(readyAt)でソート
+    const readyPlayers = room.members
+        .filter(m => m.answer !== null)
+        .sort((a, b) => a.readyAt - b.readyAt);
+
+    const membersData = room.members.map(m => {
+        // 何番目に回答したかを探す (未回答なら -1)
+        const readyIndex = readyPlayers.findIndex(p => p.id === m.id);
+        return {
+            id: m.id,
+            name: m.name,
+            isReady: m.answer !== null,
+            readyOrder: readyIndex !== -1 ? readyIndex + 1 : null // 1から始まる順序
+        };
+    });
 
     io.to(rid).emit('room-data', {
         rid,
@@ -34,7 +43,7 @@ io.on('connection', (socket) => {
     socket.on('join-room', ({ name, rid }) => {
         socket.join(rid);
         if (!rooms[rid]) rooms[rid] = { turnIndex: 0, members: [] };
-        rooms[rid].members.push({ id: socket.id, name, answer: null });
+        rooms[rid].members.push({ id: socket.id, name, answer: null, readyAt: null });
         updateRoomData(rid);
     });
 
@@ -46,8 +55,11 @@ io.on('connection', (socket) => {
         const room = rooms[rid];
         if (!room) return;
         const player = room.members.find(p => p.id === socket.id);
-        if (player) player.answer = answer;
-        updateRoomData(rid); // Ready状態を全員に通知
+        if (player) {
+            player.answer = answer;
+            player.readyAt = Date.now(); // 回答した瞬間の時刻を記録
+        }
+        updateRoomData(rid);
     });
 
     socket.on('host-judge', ({ rid, isMatch }) => {
@@ -61,7 +73,10 @@ io.on('connection', (socket) => {
         const room = rooms[rid];
         if (!room) return;
         room.turnIndex = (room.turnIndex + 1) % room.members.length;
-        room.members.forEach(p => p.answer = null);
+        room.members.forEach(p => {
+            p.answer = null;
+            p.readyAt = null;
+        });
         updateRoomData(rid);
         io.to(rid).emit('prepare-next-round');
     });
@@ -70,10 +85,7 @@ io.on('connection', (socket) => {
         for (const rid in rooms) {
             rooms[rid].members = rooms[rid].members.filter(p => p.id !== socket.id);
             if (rooms[rid].members.length === 0) delete rooms[rid];
-            else {
-                rooms[rid].turnIndex = rooms[rid].turnIndex % rooms[rid].members.length;
-                updateRoomData(rid);
-            }
+            else updateRoomData(rid);
         }
     });
 });
