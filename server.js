@@ -5,12 +5,66 @@ const { Server } = require('socket.io');
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-    cors: { origin: "*" }
+    cors: { origin: '*' }
 });
 
 app.use(express.static(__dirname));
 
 const rooms = {};
+const DISCONNECT_GRACE_MS = 10 * 60 * 1000;
+
+function normalizeText(value, maxLength = 60) {
+    if (typeof value !== 'string') return '';
+    return value.trim().replace(/\s+/g, ' ').slice(0, maxLength);
+}
+
+function getRoom(rid) {
+    if (typeof rid !== 'string') return null;
+    return rooms[rid] || null;
+}
+
+function getPlayerBySocket(room, socketId) {
+    if (!room) return null;
+    return room.members.find((member) => member.socketId === socketId) || null;
+}
+
+function getPlayerByUserId(room, userId) {
+    if (!room) return null;
+    return room.members.find((member) => member.id === userId) || null;
+}
+
+function isHost(room, userId) {
+    if (!room || room.members.length === 0) return false;
+    const host = room.members[room.turnIndex % room.members.length];
+    return !!host && host.id === userId;
+}
+
+function resetAnswers(room) {
+    room.members.forEach((member) => {
+        member.answer = null;
+        member.readyAt = null;
+    });
+}
+
+function ensureRoomTurnIndex(room) {
+    if (!room || room.members.length === 0) return;
+    room.turnIndex = ((room.turnIndex % room.members.length) + room.members.length) % room.members.length;
+}
+
+function removePlayerFromRoom(rid, userId) {
+    const room = rooms[rid];
+    if (!room) return;
+
+    room.members = room.members.filter((member) => member.id !== userId);
+
+    if (room.members.length === 0) {
+        delete rooms[rid];
+        return;
+    }
+
+    ensureRoomTurnIndex(room);
+    updateRoomData(rid);
+}
 
 /**
  * 部屋のデータを全クライアントに同期する
@@ -19,29 +73,27 @@ function updateRoomData(rid) {
     const room = rooms[rid];
     if (!room || !room.members) return;
 
-    // メンバーがいない場合は削除
     if (room.members.length === 0) {
         delete rooms[rid];
         return;
     }
 
-    // turnIndexが配列の範囲内に収まるように調整
-    room.turnIndex = room.turnIndex % room.members.length;
+    ensureRoomTurnIndex(room);
     const host = room.members[room.turnIndex];
 
-    const allMembers = room.members.map(m => ({
-        id: m.id,
-        name: m.name,
-        isHost: m.id === (host ? host.id : null),
-        isOnline: !!m.socketId
+    const allMembers = room.members.map((member) => ({
+        id: member.id,
+        name: member.name,
+        isHost: member.id === (host ? host.id : null),
+        isOnline: !!member.socketId
     }));
 
     const readyPlayers = room.members
-        .filter(m => m.answer !== null)
+        .filter((member) => member.answer !== null)
         .sort((a, b) => a.readyAt - b.readyAt)
-        .map((m, i) => ({
-            name: m.name,
-            order: i + 1
+        .map((member, index) => ({
+            name: member.name,
+            order: index + 1
         }));
 
     io.to(rid).emit('room-data', {
@@ -50,159 +102,167 @@ function updateRoomData(rid) {
         readyMembers: readyPlayers,
         totalMemberCount: room.members.length,
         status: room.status,
-        hostId: host ? host.id : null
+        hostId: host ? host.id : null,
+        hasQuestion: Boolean(room.currentQuestion),
+        currentQuestion: room.currentQuestion || ''
     });
 }
 
 io.on('connection', (socket) => {
-    // --- 入室・復帰 ---
-    socket.on('join-room', ({ name, rid, userId }) => {
-        if (!rooms[rid]) {
-            rooms[rid] = {
+    socket.on('join-room', ({ name, rid, userId } = {}) => {
+        const normalizedName = normalizeText(name, 20);
+        const normalizedRoomId = normalizeText(rid, 20);
+        const normalizedUserId = normalizeText(userId, 80);
+
+        if (!normalizedName || !normalizedRoomId || !normalizedUserId) {
+            socket.emit('error-msg', '名前・部屋番号・ユーザー情報を確認してください。');
+            return;
+        }
+
+        if (!rooms[normalizedRoomId]) {
+            rooms[normalizedRoomId] = {
                 turnIndex: 0,
                 members: [],
-                status: 'waiting'
+                status: 'waiting',
+                currentQuestion: ''
             };
         }
 
-        const room = rooms[rid];
-        let player = room.members.find(m => m.id === userId);
+        const room = rooms[normalizedRoomId];
+        let player = getPlayerByUserId(room, normalizedUserId);
 
         if (player) {
-            // 再接続（スマホの切り替えやリロード）
             player.socketId = socket.id;
-            if (name) player.name = name;
+            player.name = normalizedName;
         } else {
-            // 新規入室制限（ゲーム中かつ知らない人のみ拒否）
             if (room.status === 'playing') {
-                return socket.emit('error-msg', '現在ゲーム進行中のため入室できません。');
+                socket.emit('error-msg', '現在ゲーム進行中のため入室できません。');
+                return;
             }
+
             player = {
-                id: userId,
+                id: normalizedUserId,
                 socketId: socket.id,
-                name,
+                name: normalizedName,
                 answer: null,
                 readyAt: null
             };
             room.members.push(player);
         }
 
-        socket.join(rid);
-        updateRoomData(rid);
+        socket.join(normalizedRoomId);
+        updateRoomData(normalizedRoomId);
     });
 
-    // --- ゲーム開始（画面遷移） ---
-    socket.on('go-to-setup', ({ rid }) => {
-        const room = rooms[rid];
-        if (!room) return;
+    socket.on('go-to-setup', ({ rid, userId } = {}) => {
+        const room = getRoom(rid);
+        if (!room || !isHost(room, userId)) return;
 
         room.status = 'playing';
-        // 全員に画面遷移を命じる
+        room.currentQuestion = '';
+        resetAnswers(room);
         io.to(rid).emit('move-to-setup');
-        // その後、最新の部屋状態（ホスト情報など）を同期
         updateRoomData(rid);
     });
 
-    // --- 待機画面に戻る ---
-    socket.on('back-to-waiting', ({ rid }) => {
-        const room = rooms[rid];
-        if (!room) return;
+    socket.on('back-to-waiting', ({ rid, userId } = {}) => {
+        const room = getRoom(rid);
+        if (!room || !isHost(room, userId)) return;
 
         room.status = 'waiting';
+        room.currentQuestion = '';
+        resetAnswers(room);
         io.to(rid).emit('move-to-waiting');
         updateRoomData(rid);
     });
 
-    // --- お題送信 ---
-    socket.on('send-question', ({ rid, question }) => {
-        const room = rooms[rid];
-        if (room) {
-            // 新しいお題の時に回答をリセット
-            room.members.forEach(m => { m.answer = null; m.readyAt = null; });
-            io.to(rid).emit('receive-question', { question });
-            updateRoomData(rid);
-        }
-    });
+    socket.on('send-question', ({ rid, userId, question } = {}) => {
+        const room = getRoom(rid);
+        const normalizedQuestion = normalizeText(question, 80);
+        if (!room || !isHost(room, userId) || !normalizedQuestion) return;
 
-    // --- 回答提出 ---
-    socket.on('submit-answer', ({ rid, userId, answer }) => {
-        const room = rooms[rid];
-        if (!room) return;
-
-        const player = room.members.find(p => p.id === userId);
-        if (player && player.answer === null) {
-            player.answer = answer;
-            player.readyAt = Date.now();
-        }
+        room.status = 'playing';
+        room.currentQuestion = normalizedQuestion;
+        resetAnswers(room);
+        io.to(rid).emit('receive-question', { question: normalizedQuestion });
         updateRoomData(rid);
     });
 
-    // --- 結果オープン ---
-    socket.on('host-judge', ({ rid }) => {
-        const room = rooms[rid];
-        if (!room) return;
-        const results = room.members.map(p => ({ name: p.name, answer: p.answer }));
-        io.to(rid).emit('show-result', { results });
+    socket.on('submit-answer', ({ rid, userId, answer } = {}) => {
+        const room = getRoom(rid);
+        const normalizedAnswer = normalizeText(answer, 40);
+        if (!room || !room.currentQuestion || !normalizedAnswer) return;
+
+        const player = getPlayerByUserId(room, userId);
+        if (!player || player.socketId !== socket.id || player.answer !== null) return;
+
+        player.answer = normalizedAnswer;
+        player.readyAt = Date.now();
+        updateRoomData(rid);
     });
 
-    // --- 次のラウンドへ ---
-    socket.on('next-round', ({ rid }) => {
-        const room = rooms[rid];
-        if (!room) return;
+    socket.on('host-judge', ({ rid, userId } = {}) => {
+        const room = getRoom(rid);
+        if (!room || !isHost(room, userId)) return;
+
+        const answeredPlayers = room.members.filter((member) => member.answer !== null);
+        if (answeredPlayers.length !== room.members.length) {
+            socket.emit('error-msg', '全員が回答してから結果を開いてください。');
+            return;
+        }
+
+        const normalizedAnswers = answeredPlayers.map((member) => member.answer.toLowerCase());
+        const firstAnswer = normalizedAnswers[0];
+        const isMatch = normalizedAnswers.every((answer) => answer === firstAnswer);
+        const results = room.members.map((member) => ({
+            name: member.name,
+            answer: member.answer
+        }));
+
+        io.to(rid).emit('show-result', { results, isMatch });
+    });
+
+    socket.on('next-round', ({ rid, userId } = {}) => {
+        const room = getRoom(rid);
+        if (!room || !isHost(room, userId) || room.members.length === 0) return;
 
         room.turnIndex = (room.turnIndex + 1) % room.members.length;
-        room.members.forEach(p => { p.answer = null; p.readyAt = null; });
+        room.currentQuestion = '';
+        resetAnswers(room);
         updateRoomData(rid);
         io.to(rid).emit('prepare-next-round');
     });
 
-    // --- 明示的な退出 ---
-    socket.on('leave-room', ({ rid, userId }) => {
-        const room = rooms[rid];
-        if (!room) return;
+    socket.on('leave-room', ({ rid, userId } = {}) => {
+        const room = getRoom(rid);
+        const player = getPlayerByUserId(room, userId);
+        if (!room || !player || player.socketId !== socket.id) return;
 
-        room.members = room.members.filter(p => p.id !== userId);
         socket.leave(rid);
-
-        if (room.members.length === 0) {
-            delete rooms[rid];
-        } else {
-            room.turnIndex = room.turnIndex % room.members.length;
-            updateRoomData(rid);
-        }
+        removePlayerFromRoom(rid, userId);
         socket.emit('left-success');
     });
 
-    // --- 切断（バックグラウンド移行など） ---
     socket.on('disconnect', () => {
-        for (const rid in rooms) {
-            const room = rooms[rid];
-            const player = room.members.find(m => m.socketId === socket.id);
+        Object.entries(rooms).forEach(([rid, room]) => {
+            const player = getPlayerBySocket(room, socket.id);
+            if (!player) return;
 
-            if (player) {
-                player.socketId = null; // 切断中としてマーク
-                
-                // 待機中なら即削除、プレイ中なら10分待機（復帰のため）
-                const waitTime = room.status === 'waiting' ? 1000 : 600000;
+            player.socketId = null;
+            updateRoomData(rid);
 
-                setTimeout(() => {
-                    if (rooms[rid] && !player.socketId) {
-                        rooms[rid].members = rooms[rid].members.filter(m => m.id !== player.id);
-                        if (rooms[rid].members.length === 0) {
-                            delete rooms[rid];
-                        } else {
-                            updateRoomData(rid);
-                        }
-                    }
-                }, waitTime);
-
-                updateRoomData(rid);
-            }
-        }
+            const waitTime = room.status === 'waiting' ? 1000 : DISCONNECT_GRACE_MS;
+            setTimeout(() => {
+                const latestRoom = rooms[rid];
+                const latestPlayer = getPlayerByUserId(latestRoom, player.id);
+                if (!latestRoom || !latestPlayer || latestPlayer.socketId) return;
+                removePlayerFromRoom(rid, player.id);
+            }, waitTime);
+        });
     });
 });
 
 const PORT = process.env.PORT || 10000;
 server.listen(PORT, '0.0.0.0', () => {
-    console.log("server start " + PORT);
+    console.log(`server start ${PORT}`);
 });

@@ -11,6 +11,7 @@
     .hidden { display: none !important; }
     button { border-radius: 30px; border: none; padding: 12px; font-weight: bold; cursor: pointer; width: 85%; margin: 10px auto; display: block; transition: 0.2s; }
     button:active { opacity: 0.7; }
+    button[disabled] { opacity: 0.55; cursor: not-allowed; }
     .btn-pink { background: #ff6699; color: white; box-shadow: 0 4px 0 #d64577; }
     .btn-yellow { background: #f9d71c; color: #333; box-shadow: 0 4px 0 #d4b612; }
     .btn-white { background: white; color: #666; border: 1px solid #ccc; }
@@ -25,6 +26,9 @@
     input[type="text"] { width: 80%; padding: 12px; border-radius: 20px; border: 2px solid #ddd; margin-bottom: 10px; outline: none; font-size: 1rem; }
     .footer-input { position: fixed; bottom: 0; width: 100%; max-width: 450px; background: white; padding: 15px 0; border-top: 1px solid #ddd; z-index: 10; }
     .typing-status { text-align: center; color: #6a0dad; font-weight: bold; padding: 50px 20px; font-size: 1.2rem; }
+    .info-text { text-align: center; color: #666; padding: 0 20px 8px; }
+    .status-banner { margin: 12px 15px 0; padding: 10px 12px; border-radius: 10px; background: #fff7c2; color: #6b5800; font-weight: bold; text-align: center; }
+    .result-card { background:white; padding:15px; margin:10px 0; border-radius:10px; text-align:left; border-left:5px solid #6a0dad; }
 </style>
 </head>
 <body>
@@ -34,15 +38,15 @@
 
     <div id="view-lobby" class="view">
         <div style="padding:60px 20px;text-align:center;">
-            <input type="text" id="input-name" placeholder="名前を入力">
-            <input type="text" id="input-room" placeholder="部屋番号を入力">
-            <button class="btn-yellow" onclick="join()">部屋に入る</button>
+            <input type="text" id="input-name" placeholder="名前を入力" maxlength="20">
+            <input type="text" id="input-room" placeholder="部屋番号を入力" maxlength="20">
+            <button class="btn-yellow" id="join-btn" onclick="join()">部屋に入る</button>
         </div>
     </div>
 
     <div id="view-wait-room" class="view hidden">
         <div style="padding:20px 15px;">
-            <p style="text-align:center;color:#666;font-size:0.9rem;">メンバーを待っています...</p>
+            <p class="info-text">メンバーを待っています...</p>
             <div id="all-member-list" class="ready-list"></div>
             <button id="host-start-btn" class="btn-pink hidden" onclick="goToSetup()">ゲームを開始する</button>
             <button class="btn-exit" onclick="leaveRoom()">退出する</button>
@@ -52,7 +56,7 @@
     <div id="view-setup" class="view hidden">
         <div style="padding:40px 20px;text-align:center;">
             <h3 style="color:#6a0dad;">お題を決めてください</h3>
-            <input type="text" id="input-manual-q" placeholder="例：赤い果物といえば？">
+            <input type="text" id="input-manual-q" placeholder="例：赤い果物といえば？" maxlength="80">
             <button class="btn-pink" onclick="startGame()">送信！</button>
             <button class="btn-white" onclick="backToWaiting()">キャンセル</button>
         </div>
@@ -64,12 +68,13 @@
     </div>
 
     <div id="view-game" class="view hidden">
-        <div style="background:white;border:3px solid #f9d71c;margin:20px 15px;padding:20px;border-radius:15px;text-align:center;font-weight:bold;font-size:1.3rem;" id="current-q"></div>
+        <div style="background:white;border:3px solid #f9d71c;margin:20px 15px;padding:20px;border-radius:15px;text-align:center;font-weight:bold;font-size:1.3rem;" id="current-q">お題を待っています…</div>
+        <div id="game-status" class="status-banner hidden"></div>
         <div id="game-ready-list" class="ready-list"></div>
         <div class="footer-input">
             <div id="ans-area">
-                <input type="text" id="input-ans" placeholder="答えを入力">
-                <button class="btn-yellow" onclick="submitAns()">送信</button>
+                <input type="text" id="input-ans" placeholder="答えを入力" maxlength="40">
+                <button class="btn-yellow" id="submit-btn" onclick="submitAns()">送信</button>
             </div>
             <button id="open-btn" class="btn-pink hidden" onclick="openAll()">全員の回答を見る</button>
         </div>
@@ -77,137 +82,13 @@
 
     <div id="view-result" class="view hidden" style="padding:20px;text-align:center;padding-bottom:100px;">
         <h2 style="color:#6a0dad;">結果発表</h2>
+        <div id="result-message" class="status-banner hidden"></div>
         <div id="result-list"></div>
         <button id="next-btn" class="btn-yellow hidden" onclick="nextRound()">次のお題担当へ</button>
     </div>
 </div>
 
 <script src="/socket.io/socket.io.js"></script>
-<script>
-    const socket = io();
-    let rid = localStorage.getItem('game_room_id') || "";
-    let isHost = false;
-    let userId = localStorage.getItem('game_user_id') || ("user_" + Math.random().toString(36).slice(2));
-    localStorage.setItem("game_user_id", userId);
-
-    function show(id) {
-        document.querySelectorAll('.view').forEach(v => v.classList.add('hidden'));
-        document.getElementById(id).classList.remove('hidden');
-    }
-
-    function join() {
-        const name = document.getElementById('input-name').value;
-        const roomInput = document.getElementById('input-room').value;
-        if (!name || !roomInput) return alert("名前と部屋番号を入力してください");
-        rid = roomInput;
-        localStorage.setItem('game_user_name', name);
-        localStorage.setItem('game_room_id', rid);
-        socket.emit('join-room', { name, rid, userId });
-    }
-
-    socket.on('connect', () => {
-        const savedName = localStorage.getItem('game_user_name');
-        if (savedName && rid) socket.emit('join-room', { name: savedName, rid, userId });
-    });
-
-    socket.on('room-data', (data) => {
-        isHost = (userId === data.hostId);
-        document.getElementById('header-text').innerText = `部屋: ${data.rid}`;
-
-        // 現在表示されている画面がロビーなら待機画面へ、そうでなければ今の表示を維持（statusによって切替）
-        if (document.getElementById('view-lobby').classList.contains('hidden') === false) {
-            show('view-wait-room');
-        }
-
-        const waitHtml = data.allMembers.map(m => `
-            <div class="wait-card ${m.isOnline ? '' : 'offline'}">
-                ${m.name} ${m.isHost ? '<span class="host-badge">担当</span>' : ''}
-                ${m.isOnline ? '' : ' <small>(離脱中)</small>'}
-            </div>
-        `).join('');
-        document.getElementById('all-member-list').innerHTML = waitHtml;
-        document.getElementById('typing-member-list').innerHTML = waitHtml;
-
-        const gameHtml = data.readyMembers.map(m => `
-            <div class="player-card">
-                <div class="order-badge">${m.order}</div>
-                <div>${m.name}</div>
-                <div class="ready-tag">READY</div>
-            </div>
-        `).join('');
-        document.getElementById('game-ready-list').innerHTML = gameHtml;
-
-        // ボタン制御
-        const allReady = (data.readyMembers.length === data.totalMemberCount && data.totalMemberCount > 0);
-        if (isHost && allReady) document.getElementById('open-btn').classList.remove('hidden');
-        else document.getElementById('open-btn').classList.add('hidden');
-
-        if (isHost && data.status === 'waiting') document.getElementById('host-start-btn').classList.remove('hidden');
-        else document.getElementById('host-start-btn').classList.add('hidden');
-    });
-
-    // --- 画面遷移イベント受信 ---
-    socket.on('move-to-setup', () => {
-        if (isHost) show('view-setup');
-        else show('view-typing');
-    });
-
-    socket.on('move-to-waiting', () => {
-        show('view-wait-room');
-    });
-
-    socket.on('receive-question', (data) => {
-        document.getElementById('current-q').innerText = data.question;
-        document.getElementById('input-ans').value = ""; 
-        document.getElementById('ans-area').classList.remove('hidden');
-        show('view-game');
-    });
-
-    socket.on('show-result', (data) => {
-        show('view-result');
-        document.getElementById('result-list').innerHTML = data.results.map(r => `
-            <div style="background:white;padding:15px;margin:10px 0;border-radius:10px;text-align:left;border-left:5px solid #6a0dad;">
-                <b>${r.name}</b>: ${r.answer || '(未回答)'}
-            </div>
-        `).join('');
-        if (isHost) document.getElementById('next-btn').classList.remove('hidden');
-    });
-
-    socket.on('prepare-next-round', () => {
-        document.getElementById('input-ans').value = "";
-        document.getElementById('input-manual-q').value = "";
-        if (isHost) show('view-setup');
-        else show('view-typing');
-    });
-
-    // --- アクション送信 ---
-    function goToSetup() { socket.emit('go-to-setup', { rid }); }
-    function backToWaiting() { socket.emit('back-to-waiting', { rid }); }
-    function startGame() {
-        const q = document.getElementById('input-manual-q').value;
-        if (!q) return alert("お題を入力してください");
-        socket.emit('send-question', { rid, question: q });
-    }
-    function submitAns() {
-        const ans = document.getElementById('input-ans').value;
-        if (!ans) return alert("答えを入力してね");
-        socket.emit('submit-answer', { rid, userId, answer: ans });
-        document.getElementById('ans-area').classList.add('hidden');
-    }
-    function openAll() { socket.emit('host-judge', { rid }); }
-    function nextRound() { socket.emit('next-round', { rid }); }
-    function leaveRoom() {
-        socket.emit('leave-room', { rid, userId });
-        localStorage.removeItem('game_room_id');
-    }
-
-    socket.on('left-success', () => { location.reload(); });
-    socket.on('error-msg', (msg) => alert(msg));
-
-    window.onload = () => {
-        const savedName = localStorage.getItem('game_user_name');
-        if (savedName) document.getElementById('input-name').value = savedName;
-    };
-</script>
+<script src="script.js"></script>
 </body>
 </html>
