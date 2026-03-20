@@ -1,5 +1,6 @@
 ﻿const express = require('express');
 const http = require('http');
+const path = require('path');
 const { Server } = require('socket.io');
 
 const app = express();
@@ -8,7 +9,8 @@ const io = new Server(server, {
     cors: { origin: '*' }
 });
 
-app.use(express.static(__dirname));
+// ✅ public フォルダを static として指定
+app.use(express.static(path.join(__dirname, 'public')));
 
 const rooms = {};
 const DISCONNECT_GRACE_MS = 10 * 60 * 1000;
@@ -16,7 +18,7 @@ const MAX_ROOM_SIZE = 10000; // 大人数対応
 
 /**
  * 非同期キューで room 操作を順序付けして実行
- * Race condition を防ぐため、各 room に対して1つずつ操作を実行する
+ * Race condition を防ぐため、各 room に対して1つずつ操作を実行
  */
 class AsyncQueue {
     constructor() {
@@ -336,7 +338,7 @@ io.on('connection', (socket) => {
     });
 
     /**
-     * next-round: 次の���題担当へ遷移
+     * next-round: 次のお題担当へ遷移
      */
     socket.on('next-round', ({ rid, userId } = {}) => {
         const room = getRoom(rid);
@@ -422,4 +424,5 @@ const PORT = process.env.PORT || 10000;
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`Server started on port ${PORT}`);
     console.log(`Max room size: ${MAX_ROOM_SIZE} users`);
+    console.log(`Static files served from: ${path.join(__dirname, 'public')}`);
 });
