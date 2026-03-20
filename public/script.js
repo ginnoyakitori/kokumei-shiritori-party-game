@@ -91,7 +91,15 @@ function renderReadyMembers(members) {
     });
 }
 
-function renderResults(results) {
+/**
+ * ✅ 結果を表示する関数
+ * お題も一緒に表示
+ */
+function renderResults(results, question) {
+    // お題を表示
+    const questionEl = document.getElementById('result-question-text');
+    if (questionEl) questionEl.textContent = question || '（お題なし）';
+
     const target = document.getElementById('result-list');
     if (!target) return;
 
@@ -292,10 +300,15 @@ socket.on('receive-question', (data) => {
     show('view-game');
 });
 
+/**
+ * ✅ show-result イベント修正
+ * お題も一緒に渡すように server.js 側で対応
+ */
 socket.on('show-result', (data) => {
     show('view-result');
     setBanner('result-message', data.isMatch ? '✨ 全員一致 ✨' : '❌ 不一致 ❌');
-    renderResults(data.results || []);
+    // ✅ currentQuestion をお題として渡す
+    renderResults(data.results || [], currentQuestion);
     
     const nextBtn = document.getElementById('next-btn');
     if (nextBtn) nextBtn.classList.toggle('hidden', !isHost);
