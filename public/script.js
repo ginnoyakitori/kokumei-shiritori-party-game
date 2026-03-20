@@ -1,10 +1,21 @@
-﻿const socket = io();
+﻿const socket = io({
+    reconnection: true,
+    reconnectionDelay: 1000,
+    reconnectionDelayMax: 5000,
+    reconnectionAttempts: Infinity
+});
+
 let rid = localStorage.getItem('game_room_id') || '';
 let isHost = false;
 let currentQuestion = '';
 let hasSubmitted = false;
 const userId = localStorage.getItem('game_user_id') || (`user_${Math.random().toString(36).slice(2)}`);
 localStorage.setItem('game_user_id', userId);
+
+// 接続状態の管理
+let isConnected = false;
+let connectionRetries = 0;
+const MAX_RETRIES = 10;
 
 function text(value) {
     return typeof value === 'string' ? value : '';
@@ -23,6 +34,8 @@ function setBanner(id, message) {
 
 function renderWaitMembers(members, targetId) {
     const target = document.getElementById(targetId);
+    if (!target) return;
+
     target.innerHTML = '';
 
     members.forEach((member) => {
@@ -49,6 +62,8 @@ function renderWaitMembers(members, targetId) {
 
 function renderReadyMembers(members) {
     const target = document.getElementById('game-ready-list');
+    if (!target) return;
+
     target.innerHTML = '';
 
     members.forEach((member) => {
@@ -73,6 +88,8 @@ function renderReadyMembers(members) {
 
 function renderResults(results) {
     const target = document.getElementById('result-list');
+    if (!target) return;
+
     target.innerHTML = '';
 
     results.forEach((result) => {
@@ -93,9 +110,9 @@ function updateAnswerUi(readyCount, totalCount) {
     const openBtn = document.getElementById('open-btn');
     const everyoneReady = totalCount > 0 && readyCount === totalCount;
 
-    submitBtn.disabled = hasSubmitted || !currentQuestion;
-    ansArea.classList.toggle('hidden', isHost || hasSubmitted || !currentQuestion);
-    openBtn.classList.toggle('hidden', !isHost || !everyoneReady || !currentQuestion);
+    if (submitBtn) submitBtn.disabled = hasSubmitted || !currentQuestion || !isConnected;
+    if (ansArea) ansArea.classList.toggle('hidden', isHost || hasSubmitted || !currentQuestion || !isConnected);
+    if (openBtn) openBtn.classList.toggle('hidden', !isHost || !everyoneReady || !currentQuestion);
 
     if (!currentQuestion) {
         setBanner('game-status', 'ホストがお題を入力するまでお待ちください。');
@@ -109,36 +126,85 @@ function updateAnswerUi(readyCount, totalCount) {
 function join() {
     const name = text(document.getElementById('input-name').value).trim();
     const roomInput = text(document.getElementById('input-room').value).trim();
+    
     if (!name || !roomInput) {
         alert('名前と部屋番号を入力してください');
+        return;
+    }
+
+    if (!isConnected) {
+        alert('サーバーに接続していません。しばらく待ってからお試しください。');
         return;
     }
 
     rid = roomInput;
     localStorage.setItem('game_user_name', name);
     localStorage.setItem('game_room_id', rid);
-    document.getElementById('join-btn').disabled = true;
+    const joinBtn = document.getElementById('join-btn');
+    if (joinBtn) joinBtn.disabled = true;
+    
     socket.emit('join-room', { name, rid, userId });
 }
 
+/**
+ * 接続イベント
+ */
 socket.on('connect', () => {
-    document.getElementById('join-btn').disabled = false;
+    console.log('Socket connected:', socket.id);
+    isConnected = true;
+    connectionRetries = 0;
+    
+    const joinBtn = document.getElementById('join-btn');
+    if (joinBtn) joinBtn.disabled = false;
+    
+    // 接続後、前回の room 情報があれば自動再入室
     const savedName = localStorage.getItem('game_user_name');
     if (savedName && rid) {
+        console.log('Auto-rejoin room:', rid);
         socket.emit('join-room', { name: savedName, rid, userId });
     }
 });
 
+/**
+ * 切���イベント
+ */
 socket.on('disconnect', () => {
+    console.log('Socket disconnected');
+    isConnected = false;
     setBanner('game-status', '通信が切断されました。再接続を試みています…');
+    const joinBtn = document.getElementById('join-btn');
+    if (joinBtn) joinBtn.disabled = true;
 });
 
+/**
+ * 再接続エラー
+ */
+socket.on('connect_error', (error) => {
+    console.error('Connection error:', error);
+    connectionRetries++;
+    if (connectionRetries > MAX_RETRIES) {
+        setBanner('game-status', '通信に問題があります。ページを再読み込みしてください。');
+    }
+});
+
+/**
+ * room-data イベント
+ * サーバーから room の最新状態を受け取る
+ */
 socket.on('room-data', (data) => {
+    if (!data || !data.rid) {
+        console.warn('Invalid room-data received');
+        return;
+    }
+
     isHost = (userId === data.hostId);
     currentQuestion = data.hasQuestion ? text(data.currentQuestion) : '';
-    document.getElementById('header-text').innerText = `部屋: ${data.rid}`;
+    
+    const headerText = document.getElementById('header-text');
+    if (headerText) headerText.innerText = `部屋: ${data.rid}`;
 
-    if (!document.getElementById('view-lobby').classList.contains('hidden') && data.rid) {
+    const lobbyView = document.getElementById('view-lobby');
+    if (lobbyView && !lobbyView.classList.contains('hidden') && data.rid) {
         show('view-wait-room');
     }
 
@@ -147,17 +213,22 @@ socket.on('room-data', (data) => {
     renderReadyMembers(data.readyMembers || []);
     updateAnswerUi((data.readyMembers || []).length, data.totalMemberCount || 0);
 
-    document.getElementById('host-start-btn').classList.toggle('hidden', !(isHost && data.status === 'waiting'));
+    const hostBtn = document.getElementById('host-start-btn');
+    if (hostBtn) hostBtn.classList.toggle('hidden', !(isHost && data.status === 'waiting'));
 
-    if (currentQuestion && !document.getElementById('view-result').classList.contains('hidden')) {
-        document.getElementById('next-btn').classList.add('hidden');
+    const resultView = document.getElementById('view-result');
+    if (currentQuestion && resultView && !resultView.classList.contains('hidden')) {
+        const nextBtn = document.getElementById('next-btn');
+        if (nextBtn) nextBtn.classList.add('hidden');
     }
 });
 
 socket.on('move-to-setup', () => {
     hasSubmitted = false;
     currentQuestion = '';
-    document.getElementById('input-ans').value = '';
+    const ansInput = document.getElementById('input-ans');
+    if (ansInput) ansInput.value = '';
+    
     if (isHost) show('view-setup');
     else show('view-typing');
 });
@@ -165,17 +236,26 @@ socket.on('move-to-setup', () => {
 socket.on('move-to-waiting', () => {
     hasSubmitted = false;
     currentQuestion = '';
-    document.getElementById('input-manual-q').value = '';
-    document.getElementById('input-ans').value = '';
+    const qInput = document.getElementById('input-manual-q');
+    const ansInput = document.getElementById('input-ans');
+    if (qInput) qInput.value = '';
+    if (ansInput) ansInput.value = '';
     show('view-wait-room');
 });
 
 socket.on('receive-question', (data) => {
     hasSubmitted = false;
     currentQuestion = text(data.question);
-    document.getElementById('current-q').innerText = currentQuestion;
-    document.getElementById('input-ans').value = '';
-    updateAnswerUi(0, document.getElementById('game-ready-list').children.length || 0);
+    
+    const currentQEl = document.getElementById('current-q');
+    if (currentQEl) currentQEl.innerText = currentQuestion;
+    
+    const ansInput = document.getElementById('input-ans');
+    if (ansInput) ansInput.value = '';
+    
+    const readyList = document.getElementById('game-ready-list');
+    const totalCount = readyList ? readyList.children.length : 0;
+    updateAnswerUi(0, totalCount);
     show('view-game');
 });
 
@@ -183,25 +263,42 @@ socket.on('show-result', (data) => {
     show('view-result');
     setBanner('result-message', data.isMatch ? '✨ 全員一致 ✨' : '❌ 不一致 ❌');
     renderResults(data.results || []);
-    document.getElementById('next-btn').classList.toggle('hidden', !isHost);
+    
+    const nextBtn = document.getElementById('next-btn');
+    if (nextBtn) nextBtn.classList.toggle('hidden', !isHost);
 });
 
 socket.on('prepare-next-round', () => {
     hasSubmitted = false;
     currentQuestion = '';
-    document.getElementById('input-ans').value = '';
-    document.getElementById('input-manual-q').value = '';
-    document.getElementById('current-q').innerText = 'お題を待っています…';
-    document.getElementById('next-btn').classList.add('hidden');
+    
+    const ansInput = document.getElementById('input-ans');
+    const qInput = document.getElementById('input-manual-q');
+    const currentQEl = document.getElementById('current-q');
+    const nextBtn = document.getElementById('next-btn');
+    
+    if (ansInput) ansInput.value = '';
+    if (qInput) qInput.value = '';
+    if (currentQEl) currentQEl.innerText = 'お題を待っています…';
+    if (nextBtn) nextBtn.classList.add('hidden');
+    
     if (isHost) show('view-setup');
     else show('view-typing');
 });
 
 function goToSetup() {
+    if (!isConnected) {
+        alert('サーバーに接続していません');
+        return;
+    }
     socket.emit('go-to-setup', { rid, userId });
 }
 
 function backToWaiting() {
+    if (!isConnected) {
+        alert('サーバーに接続していません');
+        return;
+    }
     socket.emit('back-to-waiting', { rid, userId });
 }
 
@@ -209,6 +306,10 @@ function startGame() {
     const q = text(document.getElementById('input-manual-q').value).trim();
     if (!q) {
         alert('お題を入力してください');
+        return;
+    }
+    if (!isConnected) {
+        alert('サーバーに接続していません');
         return;
     }
     socket.emit('send-question', { rid, userId, question: q });
@@ -223,41 +324,73 @@ function submitAns() {
     if (!currentQuestion || hasSubmitted) {
         return;
     }
+    if (!isConnected) {
+        alert('サーバーに接続していません');
+        return;
+    }
+    
     hasSubmitted = true;
     socket.emit('submit-answer', { rid, userId, answer: ans });
     updateAnswerUi(0, 0);
 }
 
 function openAll() {
+    if (!isConnected) {
+        alert('サーバーに接続していません');
+        return;
+    }
     socket.emit('host-judge', { rid, userId });
 }
 
 function nextRound() {
+    if (!isConnected) {
+        alert('サーバーに接続していません');
+        return;
+    }
     socket.emit('next-round', { rid, userId });
 }
 
 function leaveRoom() {
     if (!rid) {
+        localStorage.removeItem('game_room_id');
+        localStorage.removeItem('game_user_name');
         location.reload();
         return;
     }
+    
+    if (!isConnected) {
+        // サーバーに接続できていない場合でも clean up
+        localStorage.removeItem('game_room_id');
+        location.reload();
+        return;
+    }
+    
     socket.emit('leave-room', { rid, userId });
     localStorage.removeItem('game_room_id');
 }
 
 socket.on('left-success', () => {
     localStorage.removeItem('game_room_id');
+    localStorage.removeItem('game_user_name');
     location.reload();
 });
 
 socket.on('error-msg', (msg) => {
-    document.getElementById('join-btn').disabled = false;
+    const joinBtn = document.getElementById('join-btn');
+    if (joinBtn) joinBtn.disabled = false;
+    
     alert(msg);
     hasSubmitted = false;
 });
 
 window.onload = () => {
     const savedName = localStorage.getItem('game_user_name');
-    if (savedName) document.getElementById('input-name').value = savedName;
-    if (rid) document.getElementById('input-room').value = rid;
+    const nameInput = document.getElementById('input-name');
+    const roomInput = document.getElementById('input-room');
+    
+    if (savedName && nameInput) nameInput.value = savedName;
+    if (rid && roomInput) roomInput.value = rid;
+    
+    // 接続状態の初期表示
+    updateAnswerUi(0, 0);
 };
