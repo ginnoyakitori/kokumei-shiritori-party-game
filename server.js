@@ -23,6 +23,7 @@ const MAX_ROOM_SIZE = 10000; // 大人数対応
 class AsyncQueue {
     constructor() {
         this.queues = {}; // roomId -> queue
+        this.processing = {}; // roomId -> processing flag
     }
 
     enqueue(roomId, operation) {
@@ -34,10 +35,12 @@ class AsyncQueue {
     }
 
     async process(roomId) {
-        if (this.processing || !this.queues[roomId] || this.queues[roomId].length === 0) {
+        if (this.processing[roomId] || !this.queues[roomId] || this.queues[roomId].length === 0) {
             return;
         }
-        this.processing = true;
+        
+        this.processing[roomId] = true;
+        
         while (this.queues[roomId] && this.queues[roomId].length > 0) {
             const operation = this.queues[roomId].shift();
             try {
@@ -46,7 +49,8 @@ class AsyncQueue {
                 console.error(`Error processing room ${roomId}:`, error);
             }
         }
-        this.processing = false;
+        
+        this.processing[roomId] = false;
     }
 }
 
@@ -96,6 +100,7 @@ function ensureRoomTurnIndex(room) {
 /**
  * room データを全クライアントに同期する
  * 大規模なメンバーがいる場合でも効率的に処理
+ * ✅ 出題者も含めて全員の回答を回答順で返す
  */
 function updateRoomData(rid) {
     const room = rooms[rid];
@@ -116,6 +121,7 @@ function updateRoomData(rid) {
         isOnline: !!member.socketId
     }));
 
+    // ✅ readyAt で回答順をソート（早く回答した順）
     const readyPlayers = room.members
         .filter((member) => member.answer !== null)
         .sort((a, b) => a.readyAt - b.readyAt)
@@ -268,6 +274,7 @@ io.on('connection', (socket) => {
 
     /**
      * send-question: host がお題を送信
+     * ✅ 出題者もゲーム画面に遷移して回答できる
      */
     socket.on('send-question', ({ rid, userId, question } = {}) => {
         const room = getRoom(rid);
@@ -281,6 +288,7 @@ io.on('connection', (socket) => {
             latestRoom.status = 'playing';
             latestRoom.currentQuestion = normalizedQuestion;
             resetAnswers(latestRoom);
+            // ✅ 全員（出題者も含む）に receive-question を送信
             io.to(rid).emit('receive-question', { question: normalizedQuestion });
             updateRoomData(rid);
         });
@@ -288,6 +296,7 @@ io.on('connection', (socket) => {
 
     /**
      * submit-answer: プレイヤーが回答を送信
+     * ✅ 出題者も回答できるように修正
      * 同じプレイヤーから複数回送信されないようガード
      */
     socket.on('submit-answer', ({ rid, userId, answer } = {}) => {
@@ -302,6 +311,7 @@ io.on('connection', (socket) => {
             const player = getPlayerByUserId(latestRoom, userId);
             if (!player || player.socketId !== socket.id || player.answer !== null) return;
 
+            // ✅ readyAt を現在時刻で設定 → 回答順を正確に記録
             player.answer = normalizedAnswer;
             player.readyAt = Date.now();
             updateRoomData(rid);
@@ -310,6 +320,7 @@ io.on('connection', (socket) => {
 
     /**
      * host-judge: 全員の回答を確認して結果発表
+     * ✅ 出題者も含めて全員が回答しているか確認
      */
     socket.on('host-judge', ({ rid, userId } = {}) => {
         const room = getRoom(rid);
@@ -319,6 +330,7 @@ io.on('connection', (socket) => {
             const latestRoom = getRoom(rid);
             if (!latestRoom || !isHost(latestRoom, userId)) return;
 
+            // ✅ 出題者も含めて全員が回答しているかチェック
             const answeredPlayers = latestRoom.members.filter((member) => member.answer !== null);
             if (answeredPlayers.length !== latestRoom.members.length) {
                 socket.emit('error-msg', '全員が回答してから結果を開いてください。');
@@ -327,11 +339,16 @@ io.on('connection', (socket) => {
 
             const normalizedAnswers = answeredPlayers.map((member) => member.answer.toLowerCase());
             const firstAnswer = normalizedAnswers[0];
+            // ✅ 全員の回答が一致しているか判定
             const isMatch = normalizedAnswers.every((answer) => answer === firstAnswer);
-            const results = latestRoom.members.map((member) => ({
-                name: member.name,
-                answer: member.answer
-            }));
+            // ✅ 回答順に結果を表示
+            const results = latestRoom.members
+                .filter((member) => member.answer !== null)
+                .sort((a, b) => a.readyAt - b.readyAt)
+                .map((member) => ({
+                    name: member.name,
+                    answer: member.answer
+                }));
 
             io.to(rid).emit('show-result', { results, isMatch });
         });
@@ -378,7 +395,7 @@ io.on('connection', (socket) => {
 
     /**
      * disconnect: socket が切断された
-     * graceful period を設けて再接続を許容
+     * graceful period を設けて再��続を許容
      */
     socket.on('disconnect', () => {
         const disconnectTime = Date.now();
@@ -402,6 +419,8 @@ io.on('connection', (socket) => {
                 updateRoomData(rid);
 
                 // graceful period のタイマーをセット
+                // ゲーム進行中: 10分間の猶予
+                // 待機中: 1秒後に削除（新規参加を促す）
                 const waitTime = latestRoom.status === 'waiting' ? 1000 : DISCONNECT_GRACE_MS;
                 
                 setTimeout(() => {
@@ -425,4 +444,5 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log(`Server started on port ${PORT}`);
     console.log(`Max room size: ${MAX_ROOM_SIZE} users`);
     console.log(`Static files served from: ${path.join(__dirname, 'public')}`);
+    console.log(`✅ 出題者も回答できるようになりました`);
 });

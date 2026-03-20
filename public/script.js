@@ -60,6 +60,10 @@ function renderWaitMembers(members, targetId) {
     });
 }
 
+/**
+ * 回答済みのメンバーを回答順に表示
+ * readyAt（回答時刻）でソートして上から順に表示
+ */
 function renderReadyMembers(members) {
     const target = document.getElementById('game-ready-list');
     if (!target) return;
@@ -75,11 +79,12 @@ function renderReadyMembers(members) {
         order.textContent = String(member.order || '');
 
         const name = document.createElement('div');
+        name.className = 'player-name';
         name.textContent = member.name || '名無し';
 
         const ready = document.createElement('div');
         ready.className = 'ready-tag';
-        ready.textContent = 'READY';
+        ready.textContent = '✓ 回答済';
 
         card.append(order, name, ready);
         target.appendChild(card);
@@ -104,20 +109,27 @@ function renderResults(results) {
     });
 }
 
+/**
+ * UI更新 - 全員回答時の判定を修正
+ * 出題者も含めて全員が回答しているか確認
+ */
 function updateAnswerUi(readyCount, totalCount) {
     const submitBtn = document.getElementById('submit-btn');
     const ansArea = document.getElementById('ans-area');
     const openBtn = document.getElementById('open-btn');
+    
+    // ✅ 全員回答の判定: 出題者も含める
     const everyoneReady = totalCount > 0 && readyCount === totalCount;
 
     if (submitBtn) submitBtn.disabled = hasSubmitted || !currentQuestion || !isConnected;
-    if (ansArea) ansArea.classList.toggle('hidden', isHost || hasSubmitted || !currentQuestion || !isConnected);
+    // ✅ 出題者も回答できるようにしたので ansArea を常に表示
+    if (ansArea) ansArea.classList.toggle('hidden', hasSubmitted || !currentQuestion || !isConnected);
     if (openBtn) openBtn.classList.toggle('hidden', !isHost || !everyoneReady || !currentQuestion);
 
     if (!currentQuestion) {
         setBanner('game-status', 'ホストがお題を入力するまでお待ちください。');
     } else if (everyoneReady) {
-        setBanner('game-status', isHost ? '全員の回答がそろいました。' : '結果公開を待っています。');
+        setBanner('game-status', isHost ? '全員の回答がそろいました。結果を見る準備はいい？' : '全員が回答しました。結果を待っています。');
     } else {
         setBanner('game-status', `回答済み: ${readyCount} / ${totalCount}`);
     }
@@ -157,6 +169,14 @@ socket.on('connect', () => {
     const joinBtn = document.getElementById('join-btn');
     if (joinBtn) joinBtn.disabled = false;
     
+    const statusEl = document.getElementById('connection-status');
+    const statusText = document.getElementById('status-text');
+    if (statusEl && statusText) {
+        statusEl.classList.remove('disconnected');
+        statusEl.classList.add('connected');
+        statusText.textContent = '✓ サーバーに接続中';
+    }
+    
     // 接続後、前回の room 情報があれば自動再入室
     const savedName = localStorage.getItem('game_user_name');
     if (savedName && rid) {
@@ -166,7 +186,7 @@ socket.on('connect', () => {
 });
 
 /**
- * 切���イベント
+ * 切断イベント
  */
 socket.on('disconnect', () => {
     console.log('Socket disconnected');
@@ -174,6 +194,14 @@ socket.on('disconnect', () => {
     setBanner('game-status', '通信が切断されました。再接続を試みています…');
     const joinBtn = document.getElementById('join-btn');
     if (joinBtn) joinBtn.disabled = true;
+    
+    const statusEl = document.getElementById('connection-status');
+    const statusText = document.getElementById('status-text');
+    if (statusEl && statusText) {
+        statusEl.classList.remove('connected');
+        statusEl.classList.add('disconnected');
+        statusText.textContent = '✗ サーバーに接続中...';
+    }
 });
 
 /**
@@ -243,6 +271,10 @@ socket.on('move-to-waiting', () => {
     show('view-wait-room');
 });
 
+/**
+ * receive-question イベント
+ * ✅ 出題者も含めて全員が回答画面に遷移
+ */
 socket.on('receive-question', (data) => {
     hasSubmitted = false;
     currentQuestion = text(data.question);
@@ -256,6 +288,7 @@ socket.on('receive-question', (data) => {
     const readyList = document.getElementById('game-ready-list');
     const totalCount = readyList ? readyList.children.length : 0;
     updateAnswerUi(0, totalCount);
+    // ✅ 出題者も game 画面に遷移
     show('view-game');
 });
 
@@ -315,6 +348,10 @@ function startGame() {
     socket.emit('send-question', { rid, userId, question: q });
 }
 
+/**
+ * submitAns 関数
+ * ✅ 出題者（isHost）でも回答できるように修正
+ */
 function submitAns() {
     const ans = text(document.getElementById('input-ans').value).trim();
     if (!ans) {
