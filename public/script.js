@@ -126,7 +126,7 @@ function updateAnswerUi(readyCount, totalCount) {
     const ansArea = document.getElementById('ans-area');
     const openBtn = document.getElementById('open-btn');
     
-    // ✅ 全員回答の判定: 出題者も含める
+    // ✅ 全員回答の判定: ��題者も含める
     const everyoneReady = totalCount > 0 && readyCount === totalCount;
 
     if (submitBtn) submitBtn.disabled = hasSubmitted || !currentQuestion || !isConnected;
@@ -257,6 +257,16 @@ socket.on('room-data', (data) => {
         const nextBtn = document.getElementById('next-btn');
         if (nextBtn) nextBtn.classList.add('hidden');
     }
+
+    // ✅ ゲーム進行中で誤った画面にいる場合は自動遷移
+    if (data.status === 'playing' && data.hasQuestion) {
+        const currentView = document.querySelector('.view:not(.hidden)');
+        if (currentView && currentView.id !== 'view-game' && currentView.id !== 'view-result') {
+            console.log('Auto-transitioning to game view due to game in progress');
+            hasSubmitted = false; // リセット
+            show('view-game');
+        }
+    }
 });
 
 socket.on('move-to-setup', () => {
@@ -342,7 +352,7 @@ function goToSetup() {
 
 function backToWaiting() {
     if (!isConnected) {
-        alert('サーバーに接続していません');
+        alert('サーバーに接��していません');
         return;
     }
     socket.emit('back-to-waiting', { rid, userId });
@@ -394,7 +404,7 @@ function openAll() {
 
 function nextRound() {
     if (!isConnected) {
-        alert('サーバーに接続していません');
+        alert('サーバーに接続していま���ん');
         return;
     }
     socket.emit('next-round', { rid, userId });

@@ -171,6 +171,7 @@ io.on('connection', (socket) => {
     /**
      * join-room: ユーザーが room に参加
      * 既存ユーザーの再接続と新規参加の両方に対応
+     * ✅ 待機中に退出したプレイヤーがゲーム中に再接続可能
      */
     socket.on('join-room', ({ name, rid, userId } = {}) => {
         const normalizedName = normalizeText(name, 20);
@@ -204,9 +205,10 @@ io.on('connection', (socket) => {
             let player = getPlayerByUserId(room, normalizedUserId);
 
             if (player) {
-                // 既存プレイヤーの再接続
+                // ✅ 既存プレイヤーの再接続（ゲーム進行中でも許可）
                 player.socketId = socket.id;
                 player.name = normalizedName;
+                console.log(`✅ Player ${normalizedUserId} rejoined. Room status: ${room.status}`);
             } else {
                 // 新規プレイヤー
                 if (room.status === 'playing') {
@@ -395,7 +397,7 @@ io.on('connection', (socket) => {
 
     /**
      * disconnect: socket が切断された
-     * graceful period を設けて再��続を許容
+     * graceful period を設けて再接続を許容
      */
     socket.on('disconnect', () => {
         const disconnectTime = Date.now();
@@ -445,4 +447,5 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log(`Max room size: ${MAX_ROOM_SIZE} users`);
     console.log(`Static files served from: ${path.join(__dirname, 'public')}`);
     console.log(`✅ 出題者も回答できるようになりました`);
+    console.log(`✅ 待機中に退出したプレイヤーがゲーム中に復帰できます`);
 });
