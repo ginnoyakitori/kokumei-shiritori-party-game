@@ -9,10 +9,11 @@ let rid = localStorage.getItem('game_room_id') || '';
 let isHost = false;
 let currentQuestion = '';
 let hasSubmitted = false;
+let gameMode = 'ichimitsu'; // 'ichimitsu' or 'denpo'
+let isJudging = false;
 const userId = localStorage.getItem('game_user_id') || (`user_${Math.random().toString(36).slice(2)}`);
 localStorage.setItem('game_user_id', userId);
 
-// 接続状態の管理
 let isConnected = false;
 let connectionRetries = 0;
 const MAX_RETRIES = 10;
@@ -28,8 +29,10 @@ function show(id) {
 
 function setBanner(id, message) {
     const banner = document.getElementById(id);
-    banner.textContent = message || '';
-    banner.classList.toggle('hidden', !message);
+    if (banner) {
+        banner.textContent = message || '';
+        banner.classList.toggle('hidden', !message);
+    }
 }
 
 function renderWaitMembers(members, targetId) {
@@ -60,10 +63,6 @@ function renderWaitMembers(members, targetId) {
     });
 }
 
-/**
- * 回答済みのメンバーを回答順に表示
- * readyAt（回答時刻）でソートして上から順に表示
- */
 function renderReadyMembers(members) {
     const target = document.getElementById('game-ready-list');
     if (!target) return;
@@ -82,21 +81,21 @@ function renderReadyMembers(members) {
         name.className = 'player-name';
         name.textContent = member.name || '名無し';
 
+        let content = '✓ 回答済';
+        if (gameMode === 'denpo') {
+            content = '✓ ヒント入力済';
+        }
+
         const ready = document.createElement('div');
         ready.className = 'ready-tag';
-        ready.textContent = '✓ 回答済';
+        ready.textContent = content;
 
         card.append(order, name, ready);
         target.appendChild(card);
     });
 }
 
-/**
- * ✅ 結果を表示する関数
- * お題も一緒に表示
- */
 function renderResults(results, question) {
-    // お題を表示
     const questionEl = document.getElementById('result-question-text');
     if (questionEl) questionEl.textContent = question || '（お題なし）';
 
@@ -117,29 +116,38 @@ function renderResults(results, question) {
     });
 }
 
-/**
- * UI更新 - 全員回答時の判定を修正
- * 出題者も含めて全員が回答しているか確認
- */
 function updateAnswerUi(readyCount, totalCount) {
     const submitBtn = document.getElementById('submit-btn');
     const ansArea = document.getElementById('ans-area');
     const openBtn = document.getElementById('open-btn');
     
-    // ✅ 全員回答の判定: ��題者も含める
     const everyoneReady = totalCount > 0 && readyCount === totalCount;
 
     if (submitBtn) submitBtn.disabled = hasSubmitted || !currentQuestion || !isConnected;
-    // ✅ 出題者も回答できるようにしたので ansArea を常に表示
     if (ansArea) ansArea.classList.toggle('hidden', hasSubmitted || !currentQuestion || !isConnected);
     if (openBtn) openBtn.classList.toggle('hidden', !isHost || !everyoneReady || !currentQuestion);
 
     if (!currentQuestion) {
         setBanner('game-status', 'ホストがお題を入力するまでお待ちください。');
     } else if (everyoneReady) {
-        setBanner('game-status', isHost ? '全員の回答がそろいました。結果を見る準備はいい？' : '全員が回答しました。結果を待っています。');
+        setBanner('game-status', isHost ? '全員が回答しました。結果を見る準備はいい？' : '全員が回答しました。結果を待っています。');
     } else {
         setBanner('game-status', `回答済み: ${readyCount} / ${totalCount}`);
+    }
+}
+
+function updateHintInputUi(readyCount, totalCount) {
+    const submitHintBtn = document.getElementById('submit-hint-btn');
+    const hintArea = document.getElementById('hint-area');
+    
+    if (isHost) {
+        // お題担当は送信不可
+        if (hintArea) hintArea.classList.add('hidden');
+        if (submitHintBtn) submitHintBtn.disabled = true;
+    } else {
+        const everyoneReady = totalCount > 0 && readyCount === totalCount - 1; // ホスト除外
+        if (submitHintBtn) submitHintBtn.disabled = hasSubmitted || !currentQuestion || !isConnected;
+        if (hintArea) hintArea.classList.toggle('hidden', hasSubmitted || !currentQuestion || !isConnected);
     }
 }
 
@@ -153,7 +161,7 @@ function join() {
     }
 
     if (!isConnected) {
-        alert('サーバーに接続していません。しばらく待ってからお試しください。');
+        alert('サーバ���に接続していません。しばらく待ってからお試しください。');
         return;
     }
 
@@ -163,12 +171,9 @@ function join() {
     const joinBtn = document.getElementById('join-btn');
     if (joinBtn) joinBtn.disabled = true;
     
-    socket.emit('join-room', { name, rid, userId });
+    socket.emit('join-room', { name, rid, userId, gameMode });
 }
 
-/**
- * 接続イベント
- */
 socket.on('connect', () => {
     console.log('Socket connected:', socket.id);
     isConnected = true;
@@ -185,17 +190,13 @@ socket.on('connect', () => {
         statusText.textContent = '✓ サーバーに接続中';
     }
     
-    // 接続後、前回の room 情報があれば自動再入室
     const savedName = localStorage.getItem('game_user_name');
     if (savedName && rid) {
         console.log('Auto-rejoin room:', rid);
-        socket.emit('join-room', { name: savedName, rid, userId });
+        socket.emit('join-room', { name: savedName, rid, userId, gameMode });
     }
 });
 
-/**
- * 切断イベント
- */
 socket.on('disconnect', () => {
     console.log('Socket disconnected');
     isConnected = false;
@@ -212,9 +213,6 @@ socket.on('disconnect', () => {
     }
 });
 
-/**
- * 再接続エラー
- */
 socket.on('connect_error', (error) => {
     console.error('Connection error:', error);
     connectionRetries++;
@@ -223,10 +221,6 @@ socket.on('connect_error', (error) => {
     }
 });
 
-/**
- * room-data イベント
- * サーバーから room の最新状態を受け取る
- */
 socket.on('room-data', (data) => {
     if (!data || !data.rid) {
         console.warn('Invalid room-data received');
@@ -235,6 +229,7 @@ socket.on('room-data', (data) => {
 
     isHost = (userId === data.hostId);
     currentQuestion = data.hasQuestion ? text(data.currentQuestion) : '';
+    gameMode = data.gameMode || 'ichimitsu';
     
     const headerText = document.getElementById('header-text');
     if (headerText) headerText.innerText = `部屋: ${data.rid}`;
@@ -245,9 +240,13 @@ socket.on('room-data', (data) => {
     }
 
     renderWaitMembers(data.allMembers || [], 'all-member-list');
-    renderWaitMembers(data.allMembers || [], 'typing-member-list');
     renderReadyMembers(data.readyMembers || []);
-    updateAnswerUi((data.readyMembers || []).length, data.totalMemberCount || 0);
+    
+    if (gameMode === 'denpo') {
+        updateHintInputUi((data.readyMembers || []).length, data.totalMemberCount || 0);
+    } else {
+        updateAnswerUi((data.readyMembers || []).length, data.totalMemberCount || 0);
+    }
 
     const hostBtn = document.getElementById('host-start-btn');
     if (hostBtn) hostBtn.classList.toggle('hidden', !(isHost && data.status === 'waiting'));
@@ -258,13 +257,17 @@ socket.on('room-data', (data) => {
         if (nextBtn) nextBtn.classList.add('hidden');
     }
 
-    // ✅ ゲーム進行中で誤った画面にいる場合は自動遷移
     if (data.status === 'playing' && data.hasQuestion) {
         const currentView = document.querySelector('.view:not(.hidden)');
-        if (currentView && currentView.id !== 'view-game' && currentView.id !== 'view-result') {
+        if (currentView && currentView.id !== 'view-game' && currentView.id !== 'view-result' && 
+            currentView.id !== 'view-hints-input' && currentView.id !== 'view-denpo-game') {
             console.log('Auto-transitioning to game view due to game in progress');
-            hasSubmitted = false; // リセット
-            show('view-game');
+            hasSubmitted = false;
+            if (gameMode === 'denpo') {
+                show('view-hints-input');
+            } else {
+                show('view-game');
+            }
         }
     }
 });
@@ -273,10 +276,12 @@ socket.on('move-to-setup', () => {
     hasSubmitted = false;
     currentQuestion = '';
     const ansInput = document.getElementById('input-ans');
+    const hintInput = document.getElementById('input-hint');
     if (ansInput) ansInput.value = '';
+    if (hintInput) hintInput.value = '';
     
     if (isHost) show('view-setup');
-    else show('view-typing');
+    else show('view-setup');
 });
 
 socket.on('move-to-waiting', () => {
@@ -284,15 +289,26 @@ socket.on('move-to-waiting', () => {
     currentQuestion = '';
     const qInput = document.getElementById('input-manual-q');
     const ansInput = document.getElementById('input-ans');
+    const hintInput = document.getElementById('input-hint');
     if (qInput) qInput.value = '';
     if (ansInput) ansInput.value = '';
+    if (hintInput) hintInput.value = '';
     show('view-wait-room');
 });
 
-/**
- * receive-question イベント
- * ✅ 出題者も含めて全員が回答画面に遷移
- */
+socket.on('move-to-hints-input', (data) => {
+    hasSubmitted = false;
+    currentQuestion = text(data.question);
+    
+    const denpoQuestion = document.getElementById('denpo-question');
+    if (denpoQuestion) denpoQuestion.innerText = currentQuestion;
+    
+    const hintInput = document.getElementById('input-hint');
+    if (hintInput) hintInput.value = '';
+    
+    show('view-hints-input');
+});
+
 socket.on('receive-question', (data) => {
     hasSubmitted = false;
     currentQuestion = text(data.question);
@@ -306,18 +322,72 @@ socket.on('receive-question', (data) => {
     const readyList = document.getElementById('game-ready-list');
     const totalCount = readyList ? readyList.children.length : 0;
     updateAnswerUi(0, totalCount);
-    // ✅ 出題者も game 画面に遷移
     show('view-game');
 });
 
-/**
- * ✅ show-result イベント修正
- * お題も一緒に渡すように server.js 側で対応
- */
+socket.on('ready-for-denpo-game', (data) => {
+    // ヒント入力完了 → ゲーム開始画面へ
+    const denpoGameQuestion = document.getElementById('denpo-game-question');
+    if (denpoGameQuestion) denpoGameQuestion.innerText = currentQuestion;
+    
+    if (isHost) {
+        // 親用: 最初のヒントを表示
+        const hintDisplay = document.getElementById('hint-display');
+        if (hintDisplay && data.hints && data.hints.length > 0) {
+            hintDisplay.innerText = `第1問のヒント: ${data.hints[0].hint}`;
+            hintDisplay.classList.remove('hidden');
+        }
+        show('view-denpo-game');
+    } else {
+        // 子用: ヒントが採用されたか確認 → 判定者になることもあり
+        show('view-denpo-game');
+    }
+});
+
+socket.on('denpo-judge-prompt', (data) => {
+    if (data.judgeId === userId) {
+        // このプレイヤーが判定者
+        isJudging = true;
+        const judgePrompt = document.getElementById('judge-prompt');
+        if (judgePrompt) {
+            judgePrompt.innerHTML = `
+                <div>親の答え: <strong>${data.parentAnswer}</strong></div>
+                <div style="margin-top:10px; font-size:0.9rem;">ヒント ${data.hintIndex + 1}/${data.totalHints}</div>
+                <div style="margin-top:15px; display:flex; gap:10px; justify-content:center;">
+                    <button class="btn-pink" style="width:auto; margin:0;" onclick="denpoJudge(true)">✓ 正解</button>
+                    <button class="btn-white" style="width:auto; margin:0;" onclick="denpoJudge(false)">✗ 不正解</button>
+                </div>
+            `;
+            judgePrompt.classList.remove('hidden');
+        }
+    }
+});
+
+socket.on('denpo-next-hint', (data) => {
+    const hintDisplay = document.getElementById('hint-display');
+    if (hintDisplay) {
+        hintDisplay.innerText = `第${data.hintOrder}問のヒント: ${data.hint}`;
+        hintDisplay.classList.remove('hidden');
+    }
+    isJudging = false;
+    const judgePrompt = document.getElementById('judge-prompt');
+    if (judgePrompt) judgePrompt.classList.add('hidden');
+});
+
+socket.on('denpo-correct', (data) => {
+    alert(`正解！\n親: +${data.hostPoints}点\nヒント提供者: +${data.hintProviderPoints}点`);
+    // 結果画面へ遷移
+    socket.emit('host-judge', { rid, userId });
+});
+
+socket.on('denpo-hints-exhausted', () => {
+    alert('ヒントがなくなりました。不正解です。');
+    show('view-wait-room');
+});
+
 socket.on('show-result', (data) => {
     show('view-result');
     setBanner('result-message', data.isMatch ? '✨ 全員一致 ✨' : '❌ 不一致 ❌');
-    // ✅ currentQuestion をお題として渡す
     renderResults(data.results || [], currentQuestion);
     
     const nextBtn = document.getElementById('next-btn');
@@ -327,32 +397,46 @@ socket.on('show-result', (data) => {
 socket.on('prepare-next-round', () => {
     hasSubmitted = false;
     currentQuestion = '';
+    isJudging = false;
     
     const ansInput = document.getElementById('input-ans');
     const qInput = document.getElementById('input-manual-q');
+    const hintInput = document.getElementById('input-hint');
     const currentQEl = document.getElementById('current-q');
+    const denpoQEl = document.getElementById('denpo-game-question');
     const nextBtn = document.getElementById('next-btn');
+    const hintDisplay = document.getElementById('hint-display');
+    const judgePrompt = document.getElementById('judge-prompt');
     
     if (ansInput) ansInput.value = '';
     if (qInput) qInput.value = '';
+    if (hintInput) hintInput.value = '';
     if (currentQEl) currentQEl.innerText = 'お題を待っています…';
+    if (denpoQEl) denpoQEl.innerText = 'お題を待っています…';
     if (nextBtn) nextBtn.classList.add('hidden');
+    if (hintDisplay) hintDisplay.classList.add('hidden');
+    if (judgePrompt) judgePrompt.classList.add('hidden');
     
     if (isHost) show('view-setup');
-    else show('view-typing');
+    else show('view-setup');
 });
 
-function goToSetup() {
+function goToGameModeSelect() {
     if (!isConnected) {
         alert('サーバーに接続していません');
         return;
     }
+    show('view-game-mode');
+}
+
+function selectGameMode(mode) {
+    gameMode = mode;
     socket.emit('go-to-setup', { rid, userId });
 }
 
 function backToWaiting() {
     if (!isConnected) {
-        alert('サーバーに接��していません');
+        alert('サーバーに接続していません');
         return;
     }
     socket.emit('back-to-waiting', { rid, userId });
@@ -371,14 +455,10 @@ function startGame() {
     socket.emit('send-question', { rid, userId, question: q });
 }
 
-/**
- * submitAns 関数
- * ✅ 出題者（isHost）でも回答できるように修正
- */
-function submitAns() {
-    const ans = text(document.getElementById('input-ans').value).trim();
-    if (!ans) {
-        alert('答えを入力してね');
+function submitHint() {
+    const hint = text(document.getElementById('input-hint').value).trim();
+    if (!hint) {
+        alert('ヒントを入力してください');
         return;
     }
     if (!currentQuestion || hasSubmitted) {
@@ -390,67 +470,9 @@ function submitAns() {
     }
     
     hasSubmitted = true;
-    socket.emit('submit-answer', { rid, userId, answer: ans });
-    updateAnswerUi(0, 0);
+    socket.emit('submit-hint', { rid, userId, hint });
+    document.getElementById('input-hint').value = '';
 }
 
-function openAll() {
-    if (!isConnected) {
-        alert('サーバーに接続していません');
-        return;
-    }
-    socket.emit('host-judge', { rid, userId });
-}
-
-function nextRound() {
-    if (!isConnected) {
-        alert('サーバーに接続していま���ん');
-        return;
-    }
-    socket.emit('next-round', { rid, userId });
-}
-
-function leaveRoom() {
-    if (!rid) {
-        localStorage.removeItem('game_room_id');
-        localStorage.removeItem('game_user_name');
-        location.reload();
-        return;
-    }
-    
-    if (!isConnected) {
-        // サーバーに接続できていない場合でも clean up
-        localStorage.removeItem('game_room_id');
-        location.reload();
-        return;
-    }
-    
-    socket.emit('leave-room', { rid, userId });
-    localStorage.removeItem('game_room_id');
-}
-
-socket.on('left-success', () => {
-    localStorage.removeItem('game_room_id');
-    localStorage.removeItem('game_user_name');
-    location.reload();
-});
-
-socket.on('error-msg', (msg) => {
-    const joinBtn = document.getElementById('join-btn');
-    if (joinBtn) joinBtn.disabled = false;
-    
-    alert(msg);
-    hasSubmitted = false;
-});
-
-window.onload = () => {
-    const savedName = localStorage.getItem('game_user_name');
-    const nameInput = document.getElementById('input-name');
-    const roomInput = document.getElementById('input-room');
-    
-    if (savedName && nameInput) nameInput.value = savedName;
-    if (rid && roomInput) roomInput.value = rid;
-    
-    // 接続状態の初期表示
-    updateAnswerUi(0, 0);
-};
+function submitDenpoAnswer() {
+    const ans = text(document.getElementById

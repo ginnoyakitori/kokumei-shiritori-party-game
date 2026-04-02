@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>全員一致ゲーム - 大人数対応版</title>
+    <title>パーティゲーム - 全員一致 & デンポー</title>
     <style>
         * {
             box-sizing: border-box;
@@ -60,12 +60,8 @@
         }
 
         @keyframes pulse {
-            0%, 100% {
-                opacity: 1;
-            }
-            50% {
-                opacity: 0.7;
-            }
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
         }
 
         .connection-indicator {
@@ -356,14 +352,6 @@
             justify-content: center;
         }
 
-        .result-question-label {
-            font-size: 0.85rem;
-            color: #999;
-            display: block;
-            margin-bottom: 8px;
-            font-weight: normal;
-        }
-
         .result-card {
             background: white;
             padding: 15px;
@@ -395,6 +383,56 @@
             font-weight: bold;
         }
 
+        .game-mode-selector {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            padding: 30px 20px;
+        }
+
+        .mode-btn {
+            width: auto;
+            padding: 15px 30px;
+            margin: 0;
+        }
+
+        .hint-card {
+            background: white;
+            border: 2px solid #ff9900;
+            border-radius: 10px;
+            padding: 15px;
+            margin: 10px 15px;
+            text-align: center;
+            font-weight: bold;
+            font-size: 1.1rem;
+            color: #333;
+            word-break: break-word;
+        }
+
+        .denpo-hint-display {
+            background: #fff3cd;
+            border: 2px solid #ffc107;
+            border-radius: 15px;
+            padding: 20px;
+            margin: 20px 15px;
+            text-align: center;
+            font-size: 1.3rem;
+            font-weight: bold;
+            color: #856404;
+            word-break: break-word;
+        }
+
+        .judge-prompt {
+            background: #e7f3ff;
+            border: 2px solid #0066cc;
+            border-radius: 15px;
+            padding: 20px;
+            margin: 20px 15px;
+            text-align: center;
+            color: #0066cc;
+            font-weight: bold;
+        }
+
         @media (max-width: 480px) {
             .app-container {
                 border-radius: 0;
@@ -413,9 +451,8 @@
 <body>
 
 <div class="app-container">
-    <div class="header" id="header-text">全員一致ゲーム</div>
+    <div class="header" id="header-text">🎮 パーティゲーム</div>
     
-    <!-- 接続状態表示 -->
     <div id="connection-status" class="connection-status disconnected">
         <span class="connection-indicator"></span>
         <span id="status-text">サーバーに接続中...</span>
@@ -439,8 +476,20 @@
                 <span id="member-count-text">0人参加中</span>
             </div>
             <div id="all-member-list" class="ready-list"></div>
-            <button id="host-start-btn" class="btn-pink hidden" onclick="goToSetup()">ゲームを開始する</button>
+            <button id="host-start-btn" class="btn-pink hidden" onclick="goToGameModeSelect()">ゲームを開始する</button>
             <button class="btn-exit" onclick="leaveRoom()">退出する</button>
+        </div>
+    </div>
+
+    <!-- ゲームモード選択 -->
+    <div id="view-game-mode" class="view hidden">
+        <div style="padding:40px 20px; text-align:center;">
+            <h3>🎯 ゲームを選んでください</h3>
+            <div class="game-mode-selector">
+                <button class="btn-pink mode-btn" onclick="selectGameMode('ichimitsu')">全員一致</button>
+                <button class="btn-pink mode-btn" onclick="selectGameMode('denpo')">デンポー</button>
+            </div>
+            <button class="btn-white" onclick="backToWaiting()">キャンセル</button>
         </div>
     </div>
 
@@ -454,13 +503,37 @@
         </div>
     </div>
 
-    <!-- 入力中 -->
-    <div id="view-typing" class="view hidden">
-        <div class="typing-status">⏳ お題入力中...</div>
-        <div id="typing-member-list" class="ready-list"></div>
+    <!-- ヒント入力画面（デンポー用） -->
+    <div id="view-hints-input" class="view hidden">
+        <div style="padding: 20px 15px; padding-bottom: 160px;">
+            <div class="current-question" id="denpo-question">お題を待っています…</div>
+            <div id="game-status" class="status-banner hidden"></div>
+            <div id="game-ready-list" class="ready-list"></div>
+        </div>
+        <div class="footer-input">
+            <div id="hint-area">
+                <input type="text" id="input-hint" placeholder="ヒントを入力" maxlength="40" autocomplete="off">
+                <button class="btn-yellow" id="submit-hint-btn" onclick="submitHint()">送信</button>
+            </div>
+        </div>
     </div>
 
-    <!-- ゲーム画面 -->
+    <!-- デンポーゲーム画面（親用） -->
+    <div id="view-denpo-game" class="view hidden">
+        <div style="padding: 20px 15px; padding-bottom: 160px;">
+            <div class="current-question" id="denpo-game-question">お題</div>
+            <div id="hint-display" class="denpo-hint-display hidden">ヒント</div>
+            <div id="judge-prompt" class="judge-prompt hidden">判定者: 正解ですか？</div>
+        </div>
+        <div class="footer-input">
+            <div id="denpo-ans-area">
+                <input type="text" id="input-denpo-ans" placeholder="答えを入力" maxlength="40" autocomplete="off">
+                <button class="btn-yellow" id="submit-denpo-ans-btn" onclick="submitDenpoAnswer()">送信</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 全員一致ゲーム画面 -->
     <div id="view-game" class="view hidden">
         <div style="padding: 20px 15px; padding-bottom: 160px;">
             <div class="current-question" id="current-q">お題を待っています…</div>
@@ -479,16 +552,13 @@
     <!-- 結果画面 -->
     <div id="view-result" class="view hidden" style="padding:20px; text-align:center; padding-bottom:140px;">
         <h2>🎉 結果発表</h2>
-        <!-- ✅ お題を表示 -->
         <div id="result-question-container" class="result-question">
             <div>
-                <span class="result-question-label">お題</span>
+                <span style="font-size:0.85rem; color:#999; display:block; margin-bottom:8px; font-weight:normal;">お題</span>
                 <span id="result-question-text"></span>
             </div>
         </div>
-        <!-- 判定結果 -->
         <div id="result-message" class="status-banner hidden"></div>
-        <!-- 回答一覧 -->
         <div id="result-list"></div>
         <button id="next-btn" class="btn-yellow hidden" onclick="nextRound()">次のお題担当へ</button>
     </div>
