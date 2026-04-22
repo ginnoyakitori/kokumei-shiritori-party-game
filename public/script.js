@@ -101,7 +101,7 @@ function renderResults(results, question, answeredCount, totalCount, gameMode) {
         const name = document.createElement('b');
         name.textContent = result.name || '名無し';
         card.appendChild(name);
-        card.append(`: ${result.answer || '(未回答)'}`);
+        card.append(` ${result.answer || '(未回答)'}`);
         target.appendChild(card);
     });
     

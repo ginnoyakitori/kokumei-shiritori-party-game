@@ -257,6 +257,9 @@
             outline: none;
             font-size: 1rem;
             transition: border-color 0.2s;
+            margin-left: auto;
+            margin-right: auto;
+            display: block;
         }
 
         input[type="text"]:focus {
@@ -280,6 +283,16 @@
             border-top: 2px solid #ddd;
             z-index: 10;
             box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.1);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        #ans-area {
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
         }
 
         .member-count {
