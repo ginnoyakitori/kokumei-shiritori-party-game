@@ -15,9 +15,6 @@ const rooms = {};
 const DISCONNECT_GRACE_MS = 10 * 60 * 1000;
 const MAX_ROOM_SIZE = 10000;
 
-/**
- * 非同期キューで room 操作を順序付けして実行
- */
 class AsyncQueue {
     constructor() {
         this.queues = {};
@@ -36,9 +33,7 @@ class AsyncQueue {
         if (this.processing[roomId] || !this.queues[roomId] || this.queues[roomId].length === 0) {
             return;
         }
-        
         this.processing[roomId] = true;
-        
         while (this.queues[roomId] && this.queues[roomId].length > 0) {
             const operation = this.queues[roomId].shift();
             try {
@@ -47,7 +42,6 @@ class AsyncQueue {
                 console.error(`Error processing room ${roomId}:`, error);
             }
         }
-        
         this.processing[roomId] = false;
     }
 }
@@ -57,6 +51,12 @@ const asyncQueue = new AsyncQueue();
 function normalizeText(value, maxLength = 60) {
     if (typeof value !== 'string') return '';
     return value.trim().replace(/\s+/g, ' ').slice(0, maxLength);
+}
+
+function isKatakanaOnly(text) {
+    if (!text) return false;
+    const katakanaRegex = /^[\u30A0-\u30FF]+$/;
+    return katakanaRegex.test(text);
 }
 
 function getRoom(rid) {
@@ -84,7 +84,6 @@ function resetAnswers(room) {
     if (!room || !room.members) return;
     room.members.forEach((member) => {
         member.answer = null;
-        member.hint = null;
         member.readyAt = null;
     });
 }
@@ -115,18 +114,17 @@ function updateRoomData(rid) {
         isOnline: !!member.socketId
     }));
 
+    // 文字数が少ない順 → 入力が早い順でソート
     const readyPlayers = room.members
-        .filter((member) => member.hint !== null && member.hint !== undefined)
+        .filter((member) => member.answer !== null)
         .sort((a, b) => {
-            // 文字数が少ない順 → 入力が早い順
-            const lenDiff = (a.hint ? a.hint.length : 0) - (b.hint ? b.hint.length : 0);
+            const lenDiff = a.answer.length - b.answer.length;
             if (lenDiff !== 0) return lenDiff;
             return a.readyAt - b.readyAt;
         })
         .map((member, index) => ({
             name: member.name,
-            order: index + 1,
-            hint: member.hint
+            order: index + 1
         }));
 
     io.to(rid).emit('room-data', {
@@ -186,11 +184,7 @@ io.on('connection', (socket) => {
                     members: [],
                     status: 'waiting',
                     currentQuestion: '',
-                    gameMode: gameMode || 'ichimitsu',
-                    hintIndex: 0,
-                    hints: [],
-                    judgeId: null,
-                    parentAnswer: null
+                    gameMode: gameMode || 'ichimitsu'
                 };
             }
 
@@ -216,7 +210,6 @@ io.on('connection', (socket) => {
                     id: normalizedUserId,
                     socketId: socket.id,
                     name: normalizedName,
-                    hint: null,
                     answer: null,
                     readyAt: null
                 };
@@ -239,10 +232,6 @@ io.on('connection', (socket) => {
             latestRoom.status = 'playing';
             latestRoom.currentQuestion = '';
             resetAnswers(latestRoom);
-            latestRoom.hintIndex = 0;
-            latestRoom.hints = [];
-            latestRoom.judgeId = null;
-            latestRoom.parentAnswer = null;
             io.to(rid).emit('move-to-setup');
             updateRoomData(rid);
         });
@@ -276,59 +265,21 @@ io.on('connection', (socket) => {
             latestRoom.status = 'playing';
             latestRoom.currentQuestion = normalizedQuestion;
             resetAnswers(latestRoom);
-            
-            if (latestRoom.gameMode === 'denpo') {
-                // デンポーモード: ヒント入力画面へ
-                io.to(rid).emit('move-to-hints-input', { question: normalizedQuestion });
-            } else {
-                // 全員一致モード: 通常の回答画面
-                io.to(rid).emit('receive-question', { question: normalizedQuestion });
-            }
+            io.to(rid).emit('receive-question', { question: normalizedQuestion });
             updateRoomData(rid);
-        });
-    });
-
-    socket.on('submit-hint', ({ rid, userId, hint } = {}) => {
-        const room = getRoom(rid);
-        const normalizedHint = normalizeText(hint, 40);
-        if (!room || !room.currentQuestion || !normalizedHint) return;
-
-        asyncQueue.enqueue(rid, async () => {
-            const latestRoom = getRoom(rid);
-            if (!latestRoom || !latestRoom.currentQuestion) return;
-
-            const player = getPlayerByUserId(latestRoom, userId);
-            if (!player || player.socketId !== socket.id || player.hint !== null) return;
-
-            // お題担当（ホスト）はヒントを送信しない
-            if (isHost(latestRoom, userId)) return;
-
-            player.hint = normalizedHint;
-            player.readyAt = Date.now();
-            updateRoomData(rid);
-
-            // 全員がヒントを入力したかチェック
-            const nonHostMembers = latestRoom.members.filter(m => !isHost(latestRoom, m.id));
-            const hintSubmitted = nonHostMembers.filter(m => m.hint !== null).length;
-            
-            if (hintSubmitted === nonHostMembers.length) {
-                // ヒント入力完了 → 親（ホスト）にヒント順を表示
-                latestRoom.hints = nonHostMembers
-                    .filter(m => m.hint !== null)
-                    .sort((a, b) => {
-                        const lenDiff = a.hint.length - b.hint.length;
-                        return lenDiff !== 0 ? lenDiff : a.readyAt - b.readyAt;
-                    });
-                latestRoom.hintIndex = 0;
-                latestRoom.judgeId = null;
-                io.to(rid).emit('ready-for-denpo-game', { hints: latestRoom.hints });
-            }
         });
     });
 
     socket.on('submit-answer', ({ rid, userId, answer } = {}) => {
         const room = getRoom(rid);
         const normalizedAnswer = normalizeText(answer, 40);
+        
+        // デンポーの場合はカタカナチェック
+        if (room && room.gameMode === 'denpo' && !isKatakanaOnly(normalizedAnswer)) {
+            socket.emit('error-msg', 'デンポーではカタカナのみ入力できます。');
+            return;
+        }
+        
         if (!room || !room.currentQuestion || !normalizedAnswer) return;
 
         asyncQueue.enqueue(rid, async () => {
@@ -341,103 +292,6 @@ io.on('connection', (socket) => {
             player.answer = normalizedAnswer;
             player.readyAt = Date.now();
             updateRoomData(rid);
-        });
-    });
-
-    socket.on('denpo-submit-answer', ({ rid, userId, answer } = {}) => {
-        const room = getRoom(rid);
-        const normalizedAnswer = normalizeText(answer, 40);
-        if (!room || !isHost(room, userId) || !normalizedAnswer) return;
-
-        asyncQueue.enqueue(rid, async () => {
-            const latestRoom = getRoom(rid);
-            if (!latestRoom || !isHost(latestRoom, userId)) return;
-
-            latestRoom.parentAnswer = normalizedAnswer;
-            
-            // 判定者を自動選出（親とそのヒント提供者以外）
-            if (latestRoom.hintIndex < latestRoom.hints.length) {
-                const currentHint = latestRoom.hints[latestRoom.hintIndex];
-                const hintProviderId = latestRoom.members.find(m => m.hint === currentHint.hint)?.id;
-                
-                const judges = latestRoom.members.filter(m => 
-                    m.id !== userId && m.id !== hintProviderId && m.socketId
-                );
-                
-                if (judges.length > 0) {
-                    const randomJudge = judges[Math.floor(Math.random() * judges.length)];
-                    latestRoom.judgeId = randomJudge.id;
-                    
-                    io.to(rid).emit('denpo-judge-prompt', {
-                        parentAnswer: normalizedAnswer,
-                        judgeId: randomJudge.id,
-                        hintIndex: latestRoom.hintIndex,
-                        totalHints: latestRoom.hints.length
-                    });
-                }
-            }
-        });
-    });
-
-    socket.on('denpo-judge', ({ rid, userId, isCorrect } = {}) => {
-        const room = getRoom(rid);
-        if (!room || room.judgeId !== userId) return;
-
-        asyncQueue.enqueue(rid, async () => {
-            const latestRoom = getRoom(rid);
-            if (!latestRoom || latestRoom.judgeId !== userId) return;
-
-            if (isCorrect) {
-                // 正解！ ポイント付与
-                const host = latestRoom.members[latestRoom.turnIndex];
-                const correctHintProvider = latestRoom.members.find(m => 
-                    m.hint === latestRoom.hints[latestRoom.hintIndex].hint
-                );
-                
-                const childCount = latestRoom.members.length - 1; // ホスト以外
-                if (host) {
-                    host.score = (host.score || 0) + (childCount - (latestRoom.hintIndex + 1));
-                }
-                if (correctHintProvider) {
-                    correctHintProvider.score = (correctHintProvider.score || 0) + childCount;
-                }
-                
-                io.to(rid).emit('denpo-correct', {
-                    hostPoints: childCount - (latestRoom.hintIndex + 1),
-                    hintProviderPoints: childCount
-                });
-            } else {
-                // 不正解 → 次のヒント
-                latestRoom.hintIndex++;
-                
-                if (latestRoom.hintIndex < latestRoom.hints.length) {
-                    // 次のヒントを表示
-                    const nextHint = latestRoom.hints[latestRoom.hintIndex];
-                    const nextHintProvider = latestRoom.members.find(m => m.hint === nextHint.hint);
-                    
-                    const judges = latestRoom.members.filter(m => 
-                        m.id !== latestRoom.members[latestRoom.turnIndex].id && 
-                        m.id !== nextHintProvider?.id && 
-                        m.socketId
-                    );
-                    
-                    if (judges.length > 0) {
-                        const randomJudge = judges[Math.floor(Math.random() * judges.length)];
-                        latestRoom.judgeId = randomJudge.id;
-                        latestRoom.parentAnswer = null;
-                        
-                        io.to(rid).emit('denpo-next-hint', {
-                            hint: nextHint.hint,
-                            hintOrder: latestRoom.hintIndex + 1,
-                            totalHints: latestRoom.hints.length,
-                            judgeId: randomJudge.id
-                        });
-                    }
-                } else {
-                    // ヒントがなくなった
-                    io.to(rid).emit('denpo-hints-exhausted');
-                }
-            }
         });
     });
 
@@ -459,12 +313,17 @@ io.on('connection', (socket) => {
             const firstAnswer = normalizedAnswers[0];
             const isMatch = normalizedAnswers.every((answer) => answer === firstAnswer);
             
+            // 文字数が少ない順 → 入力が早い順でソート
             const results = latestRoom.members
                 .filter((member) => member.answer !== null)
-                .sort((a, b) => a.readyAt - b.readyAt)
-                .map((member) => ({
+                .sort((a, b) => {
+                    const lenDiff = a.answer.length - b.answer.length;
+                    return lenDiff !== 0 ? lenDiff : a.readyAt - b.readyAt;
+                })
+                .map((member, index) => ({
                     name: member.name,
-                    answer: member.answer
+                    answer: member.answer,
+                    order: index + 1
                 }));
 
             io.to(rid).emit('show-result', { results, isMatch });
@@ -482,10 +341,6 @@ io.on('connection', (socket) => {
             latestRoom.turnIndex = (latestRoom.turnIndex + 1) % latestRoom.members.length;
             latestRoom.currentQuestion = '';
             resetAnswers(latestRoom);
-            latestRoom.hintIndex = 0;
-            latestRoom.hints = [];
-            latestRoom.judgeId = null;
-            latestRoom.parentAnswer = null;
             updateRoomData(rid);
             io.to(rid).emit('prepare-next-round');
         });
@@ -509,8 +364,6 @@ io.on('connection', (socket) => {
     });
 
     socket.on('disconnect', () => {
-        const disconnectTime = Date.now();
-        
         Object.entries(rooms).forEach(([rid, room]) => {
             if (!room || !room.members) return;
 
@@ -547,5 +400,5 @@ io.on('connection', (socket) => {
 const PORT = process.env.PORT || 10000;
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`Server started on port ${PORT}`);
-    console.log(`✅ デンポーゲームに対応しました`);
+    console.log(`✅ デンポーゲーム（シンプル版）に対応しました`);
 });

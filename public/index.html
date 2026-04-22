@@ -282,14 +282,6 @@
             box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.1);
         }
 
-        .typing-status {
-            text-align: center;
-            color: #6a0dad;
-            font-weight: bold;
-            padding: 50px 20px;
-            font-size: 1.2rem;
-        }
-
         .member-count {
             text-align: center;
             color: #666;
@@ -360,12 +352,14 @@
             text-align: left;
             border-left: 5px solid #6a0dad;
             word-break: break-word;
+            display: flex;
+            align-items: center;
+            gap: 10px;
         }
 
         .result-card b {
             color: #6a0abd;
-            display: block;
-            margin-bottom: 5px;
+            display: inline;
         }
 
         h2, h3 {
@@ -394,43 +388,6 @@
             width: auto;
             padding: 15px 30px;
             margin: 0;
-        }
-
-        .hint-card {
-            background: white;
-            border: 2px solid #ff9900;
-            border-radius: 10px;
-            padding: 15px;
-            margin: 10px 15px;
-            text-align: center;
-            font-weight: bold;
-            font-size: 1.1rem;
-            color: #333;
-            word-break: break-word;
-        }
-
-        .denpo-hint-display {
-            background: #fff3cd;
-            border: 2px solid #ffc107;
-            border-radius: 15px;
-            padding: 20px;
-            margin: 20px 15px;
-            text-align: center;
-            font-size: 1.3rem;
-            font-weight: bold;
-            color: #856404;
-            word-break: break-word;
-        }
-
-        .judge-prompt {
-            background: #e7f3ff;
-            border: 2px solid #0066cc;
-            border-radius: 15px;
-            padding: 20px;
-            margin: 20px 15px;
-            text-align: center;
-            color: #0066cc;
-            font-weight: bold;
         }
 
         @media (max-width: 480px) {
@@ -503,37 +460,7 @@
         </div>
     </div>
 
-    <!-- ヒント入力画面（デンポー用） -->
-    <div id="view-hints-input" class="view hidden">
-        <div style="padding: 20px 15px; padding-bottom: 160px;">
-            <div class="current-question" id="denpo-question">お題を待っています…</div>
-            <div id="game-status" class="status-banner hidden"></div>
-            <div id="game-ready-list" class="ready-list"></div>
-        </div>
-        <div class="footer-input">
-            <div id="hint-area">
-                <input type="text" id="input-hint" placeholder="ヒントを入力" maxlength="40" autocomplete="off">
-                <button class="btn-yellow" id="submit-hint-btn" onclick="submitHint()">送信</button>
-            </div>
-        </div>
-    </div>
-
-    <!-- デンポーゲーム画面（親用） -->
-    <div id="view-denpo-game" class="view hidden">
-        <div style="padding: 20px 15px; padding-bottom: 160px;">
-            <div class="current-question" id="denpo-game-question">お題</div>
-            <div id="hint-display" class="denpo-hint-display hidden">ヒント</div>
-            <div id="judge-prompt" class="judge-prompt hidden">判定者: 正解ですか？</div>
-        </div>
-        <div class="footer-input">
-            <div id="denpo-ans-area">
-                <input type="text" id="input-denpo-ans" placeholder="答えを入力" maxlength="40" autocomplete="off">
-                <button class="btn-yellow" id="submit-denpo-ans-btn" onclick="submitDenpoAnswer()">送信</button>
-            </div>
-        </div>
-    </div>
-
-    <!-- 全員一致ゲーム画面 -->
+    <!-- 全員一致・デンポーゲーム画面 -->
     <div id="view-game" class="view hidden">
         <div style="padding: 20px 15px; padding-bottom: 160px;">
             <div class="current-question" id="current-q">お題を待っています…</div>
