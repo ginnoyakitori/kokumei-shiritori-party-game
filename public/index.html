@@ -390,6 +390,19 @@
             margin: 0;
         }
 
+        .btn-group {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            padding: 10px;
+        }
+
+        .btn-group button {
+            width: auto;
+            margin: 0;
+            padding: 10px 20px;
+        }
+
         @media (max-width: 480px) {
             .app-container {
                 border-radius: 0;
@@ -400,6 +413,14 @@
             }
 
             input[type="text"] {
+                width: 90%;
+            }
+
+            .btn-group {
+                flex-direction: column;
+            }
+
+            .btn-group button {
                 width: 90%;
             }
         }
@@ -472,7 +493,10 @@
                 <input type="text" id="input-ans" placeholder="答えを入力" maxlength="40" autocomplete="off">
                 <button class="btn-yellow" id="submit-btn" onclick="submitAns()">送信</button>
             </div>
-            <button id="open-btn" class="btn-pink hidden" onclick="openAll()">全員の回答を見る</button>
+            <div class="btn-group">
+                <button id="open-btn" class="btn-pink hidden" onclick="openAll()">全員の回答を見る</button>
+                <button id="force-open-btn" class="btn-white hidden" onclick="openAll()">途中で打ち切る</button>
+            </div>
         </div>
     </div>
 
@@ -486,6 +510,7 @@
             </div>
         </div>
         <div id="result-message" class="status-banner hidden"></div>
+        <div id="result-message-count" class="status-banner hidden" style="background:#e7f3ff; color:#0066cc; border-left-color:#0066cc;"></div>
         <div id="result-list"></div>
         <button id="next-btn" class="btn-yellow hidden" onclick="nextRound()">次のお題担当へ</button>
     </div>

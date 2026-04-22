@@ -53,12 +53,6 @@ function normalizeText(value, maxLength = 60) {
     return value.trim().replace(/\s+/g, ' ').slice(0, maxLength);
 }
 
-function isKatakanaOnly(text) {
-    if (!text) return false;
-    const katakanaRegex = /^[\u30A0-\u30FF]+$/;
-    return katakanaRegex.test(text);
-}
-
 function getRoom(rid) {
     if (typeof rid !== 'string') return null;
     return rooms[rid] || null;
@@ -114,18 +108,31 @@ function updateRoomData(rid) {
         isOnline: !!member.socketId
     }));
 
-    // 文字数が少ない順 → 入力が早い順でソート
-    const readyPlayers = room.members
-        .filter((member) => member.answer !== null)
-        .sort((a, b) => {
-            const lenDiff = a.answer.length - b.answer.length;
-            if (lenDiff !== 0) return lenDiff;
-            return a.readyAt - b.readyAt;
-        })
-        .map((member, index) => ({
-            name: member.name,
-            order: index + 1
-        }));
+    // ゲームモードに応じて異なるソート順序
+    let readyPlayers = [];
+    if (room.gameMode === 'denpo') {
+        // デンポー: 文字数が少ない順 → 入力が早い順でソート
+        readyPlayers = room.members
+            .filter((member) => member.answer !== null)
+            .sort((a, b) => {
+                const lenDiff = a.answer.length - b.answer.length;
+                if (lenDiff !== 0) return lenDiff;
+                return a.readyAt - b.readyAt;
+            })
+            .map((member, index) => ({
+                name: member.name,
+                order: index + 1
+            }));
+    } else {
+        // 全員一致: 入力が早い順でソート
+        readyPlayers = room.members
+            .filter((member) => member.answer !== null)
+            .sort((a, b) => a.readyAt - b.readyAt)
+            .map((member, index) => ({
+                name: member.name,
+                order: index + 1
+            }));
+    }
 
     io.to(rid).emit('room-data', {
         rid,
@@ -274,12 +281,6 @@ io.on('connection', (socket) => {
         const room = getRoom(rid);
         const normalizedAnswer = normalizeText(answer, 40);
         
-        // デンポーの場合はカタカナチェック
-        if (room && room.gameMode === 'denpo' && !isKatakanaOnly(normalizedAnswer)) {
-            socket.emit('error-msg', 'デンポーではカタカナのみ入力できます。');
-            return;
-        }
-        
         if (!room || !room.currentQuestion || !normalizedAnswer) return;
 
         asyncQueue.enqueue(rid, async () => {
@@ -303,30 +304,77 @@ io.on('connection', (socket) => {
             const latestRoom = getRoom(rid);
             if (!latestRoom || !isHost(latestRoom, userId)) return;
 
-            const answeredPlayers = latestRoom.members.filter((member) => member.answer !== null);
-            if (answeredPlayers.length !== latestRoom.members.length) {
-                socket.emit('error-msg', '全員が回答してから結果を開いてください。');
-                return;
-            }
-
-            const normalizedAnswers = answeredPlayers.map((member) => member.answer.toLowerCase());
-            const firstAnswer = normalizedAnswers[0];
-            const isMatch = normalizedAnswers.every((answer) => answer === firstAnswer);
-            
-            // 文字数が少ない順 → 入力が早い順でソート
+            // 入力が早い順でソート
             const results = latestRoom.members
+                .filter((member) => member.answer !== null)
+                .sort((a, b) => a.readyAt - b.readyAt)
+                .map((member) => ({
+                    name: member.name,
+                    answer: member.answer
+                }));
+
+            // 全員一致の判定
+            if (results.length > 0) {
+                const normalizedAnswers = results.map((member) => member.answer.toLowerCase());
+                const firstAnswer = normalizedAnswers[0];
+                const isMatch = normalizedAnswers.every((answer) => answer === firstAnswer);
+                
+                io.to(rid).emit('show-result', { 
+                    results, 
+                    isMatch,
+                    answeredCount: results.length,
+                    totalCount: latestRoom.members.length
+                });
+            } else {
+                io.to(rid).emit('show-result', { 
+                    results: [], 
+                    isMatch: false,
+                    answeredCount: 0,
+                    totalCount: latestRoom.members.length
+                });
+            }
+        });
+    });
+
+    socket.on('denpo-judge', ({ rid, userId } = {}) => {
+        const room = getRoom(rid);
+        if (!room || !isHost(room, userId)) return;
+
+        asyncQueue.enqueue(rid, async () => {
+            const latestRoom = getRoom(rid);
+            if (!latestRoom || !isHost(latestRoom, userId)) return;
+
+            // 入力が早い順でソート
+            const resultsByTime = latestRoom.members
+                .filter((member) => member.answer !== null)
+                .sort((a, b) => a.readyAt - b.readyAt);
+
+            // 文字数が少ない順 → 入力が早い順でソート（番号付け用）
+            const resultsByLength = latestRoom.members
                 .filter((member) => member.answer !== null)
                 .sort((a, b) => {
                     const lenDiff = a.answer.length - b.answer.length;
-                    return lenDiff !== 0 ? lenDiff : a.readyAt - b.readyAt;
-                })
-                .map((member, index) => ({
+                    if (lenDiff !== 0) return lenDiff;
+                    return a.readyAt - b.readyAt;
+                });
+
+            // timeOrderで配置、lengthOrderで番号付け
+            const results = resultsByTime.map((member) => {
+                const orderData = resultsByLength.findIndex((m) => m.id === member.id);
+                return {
                     name: member.name,
                     answer: member.answer,
-                    order: index + 1
-                }));
+                    order: orderData + 1
+                };
+            });
 
-            io.to(rid).emit('show-result', { results, isMatch });
+            io.to(rid).emit('show-result', { 
+                results, 
+                isMatch: false,
+                answeredCount: results.length,
+                totalCount: latestRoom.members.length,
+                gameMode: 'denpo'
+            });
         });
     });
 
@@ -400,5 +448,5 @@ io.on('connection', (socket) => {
 const PORT = process.env.PORT || 10000;
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`Server started on port ${PORT}`);
-    console.log(`✅ デンポーゲーム（シンプル版）に対応しました`);
+    console.log(`✅ 全員一致＆デンポーゲームに対応しました`);
 });

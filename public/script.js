@@ -78,21 +78,25 @@ function renderReadyMembers(members) {
     });
 }
 
-function renderResults(results, question) {
+function renderResults(results, question, answeredCount, totalCount, gameMode) {
     const questionEl = document.getElementById('result-question-text');
     if (questionEl) questionEl.textContent = question || '（お題なし）';
+    
     const target = document.getElementById('result-list');
     if (!target) return;
     target.innerHTML = '';
+    
     results.forEach((result) => {
         const card = document.createElement('div');
         card.className = 'result-card';
         
-        // 番号を付けて表示
-        const orderEl = document.createElement('span');
-        orderEl.style.cssText = 'background:#f9d71c;color:#333;border-radius:50%;width:30px;height:30px;display:inline-flex;align-items:center;justify-content:center;font-weight:bold;margin-right:10px;flex-shrink:0;';
-        orderEl.textContent = result.order || '';
-        card.appendChild(orderEl);
+        // デンポーの場合は番号を表示
+        if (gameMode === 'denpo' && result.order) {
+            const orderEl = document.createElement('span');
+            orderEl.style.cssText = 'background:#f9d71c;color:#333;border-radius:50%;width:30px;height:30px;display:inline-flex;align-items:center;justify-content:center;font-weight:bold;flex-shrink:0;';
+            orderEl.textContent = result.order || '';
+            card.appendChild(orderEl);
+        }
         
         const name = document.createElement('b');
         name.textContent = result.name || '名無し';
@@ -100,20 +104,25 @@ function renderResults(results, question) {
         card.append(`: ${result.answer || '(未回答)'}`);
         target.appendChild(card);
     });
+    
+    // 回答状況を表示
+    const statusText = `回答：${answeredCount}/${totalCount}人`;
+    setBanner('result-message-count', statusText);
 }
 
 function updateAnswerUi(readyCount, totalCount) {
     const submitBtn = document.getElementById('submit-btn');
     const ansArea = document.getElementById('ans-area');
     const openBtn = document.getElementById('open-btn');
-    const everyoneReady = totalCount > 0 && readyCount === totalCount;
+    const forceOpenBtn = document.getElementById('force-open-btn');
+    
     if (submitBtn) submitBtn.disabled = hasSubmitted || !currentQuestion || !isConnected;
     if (ansArea) ansArea.classList.toggle('hidden', hasSubmitted || !currentQuestion || !isConnected);
-    if (openBtn) openBtn.classList.toggle('hidden', !isHost || !everyoneReady || !currentQuestion);
+    if (openBtn) openBtn.classList.toggle('hidden', !isHost || readyCount === 0 || !currentQuestion);
+    if (forceOpenBtn) forceOpenBtn.classList.toggle('hidden', !isHost || readyCount === 0 || !currentQuestion);
+    
     if (!currentQuestion) {
         setBanner('game-status', 'ホストがお題を入力するまでお待ちください。');
-    } else if (everyoneReady) {
-        setBanner('game-status', isHost ? '全員が回答しました。結果を見る準備はいい？' : '全員が回答しました。結果を待っています。');
     } else {
         setBanner('game-status', `回答済み: ${readyCount} / ${totalCount}`);
     }
@@ -248,8 +257,16 @@ socket.on('receive-question', (data) => {
 
 socket.on('show-result', (data) => {
     show('view-result');
-    setBanner('result-message', data.isMatch ? '✨ 全員一致 ✨' : '❌ 不一致 ❌');
-    renderResults(data.results || [], currentQuestion);
+    
+    if (gameMode === 'ichimitsu') {
+        // 全員一致: 全員一致したか判定を表示
+        setBanner('result-message', data.isMatch ? '✨ 全員一致 ✨' : '❌ 不一致 ❌');
+    } else {
+        // デンポー: 回答人数のみ表示
+        setBanner('result-message', '');
+    }
+    
+    renderResults(data.results || [], currentQuestion, data.answeredCount || 0, data.totalCount || 0, gameMode);
     const nextBtn = document.getElementById('next-btn');
     if (nextBtn) nextBtn.classList.toggle('hidden', !isHost);
 });
@@ -309,13 +326,17 @@ function submitAns() {
         alert('答えを入力してください');
         return;
     }
+    
+    // デンポーの場合はカタカナチェック
     if (gameMode === 'denpo') {
         const katakanaRegex = /^[\u30A0-\u30FF]+$/;
         if (!katakanaRegex.test(ans)) {
             alert('デンポーではカタカナのみ入力できます');
+            document.getElementById('input-ans').value = '';
             return;
         }
     }
+    
     if (!currentQuestion || hasSubmitted) {
         return;
     }
@@ -333,7 +354,11 @@ function openAll() {
         alert('サーバーに接続していません');
         return;
     }
-    socket.emit('host-judge', { rid, userId });
+    if (gameMode === 'ichimitsu') {
+        socket.emit('host-judge', { rid, userId });
+    } else {
+        socket.emit('denpo-judge', { rid, userId });
+    }
 }
 
 function nextRound() {
