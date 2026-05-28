@@ -53,6 +53,24 @@ function normalizeGameMode(mode) {
     return mode === 'denpo' ? 'denpo' : 'ichimitsu';
 }
 
+function normalizeRoomId(value, maxLength = 20) {
+    if (typeof value !== 'string') return '';
+
+    const halfWidth = value
+        .trim()
+        .replace(/[０-９]/g, (char) =>
+            String.fromCharCode(char.charCodeAt(0) - 0xFEE0)
+        );
+
+    if (!/^\d+$/.test(halfWidth)) {
+        return '';
+    }
+
+    const normalized = halfWidth.replace(/^0+(?=\d)/, '');
+
+    return normalized.slice(0, maxLength);
+}
+
 function isKatakanaOnly(value) {
     return /^[\u30A0-\u30FF]+$/.test(value);
 }
@@ -246,11 +264,12 @@ function join() {
     const roomInputEl = getEl('input-room');
 
     const name = text(nameInput ? nameInput.value : '').trim();
-    const roomInput = text(roomInputEl ? roomInputEl.value : '').trim();
+    const rawRoomInput = text(roomInputEl ? roomInputEl.value : '').trim();
+    const roomInput = normalizeRoomId(rawRoomInput);
 
     if (!name || !roomInput) {
-        alert('名前と部屋番号を入力してください');
-        return;
+         alert('名前と数字の部屋番号を入力してください');
+         return;
     }
 
     if (!isConnected) {
@@ -724,7 +743,20 @@ window.onload = () => {
 
     const nameInput = getEl('input-name');
     const roomInput = getEl('input-room');
+    const roomInputForNumber = getEl('input-room');
 
+    if (roomInputForNumber) {
+        roomInputForNumber.inputMode = 'numeric';
+        roomInputForNumber.pattern = '[0-9]*';
+
+        roomInputForNumber.addEventListener('input', () => {
+            const converted = roomInputForNumber.value.replace(/[０-９]/g, (char) =>
+                String.fromCharCode(char.charCodeAt(0) - 0xFEE0)
+           );
+
+            roomInputForNumber.value = converted.replace(/[^\d]/g, '');
+        });
+    }
     if (savedName && nameInput) {
         nameInput.value = savedName;
     }

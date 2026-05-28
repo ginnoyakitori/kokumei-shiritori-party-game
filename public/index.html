@@ -454,7 +454,7 @@
         <div style="padding:60px 20px; text-align:center;">
             <h3>名前と部屋番号を入力してください</h3>
             <input type="text" id="input-name" placeholder="名前を入力" maxlength="20" autocomplete="name">
-            <input type="text" id="input-room" placeholder="部屋番号を入力" maxlength="20" autocomplete="off">
+            <input type="text" id="input-room" placeholder="数字の部屋番号を入力" maxlength="20" inputmode="numeric" pattern="[0-9]*" autocomplete="off">
             <button class="btn-yellow" id="join-btn" onclick="join()">部屋に入る</button>
         </div>
     </div>

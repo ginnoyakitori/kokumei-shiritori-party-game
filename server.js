@@ -67,10 +67,36 @@ class AsyncQueue {
 
 const asyncQueue = new AsyncQueue();
 
+
+
 function normalizeText(value, maxLength = 60) {
     if (typeof value !== 'string') return '';
     return value.trim().replace(/\s+/g, ' ').slice(0, maxLength);
 }
+
+function normalizeRoomId(value, maxLength = 20) {
+    if (typeof value !== 'string') return '';
+
+    const halfWidth = value
+        .trim()
+        .replace(/[０-９]/g, (char) =>
+            String.fromCharCode(char.charCodeAt(0) - 0xFEE0)
+        );
+
+    if (!/^\d+$/.test(halfWidth)) {
+        return '';
+    }
+
+    const normalized = halfWidth.replace(/^0+(?=\d)/, '');
+
+    return normalized.slice(0, maxLength);
+}
+
+function getRoom(rid) {
+    if (typeof rid !== 'string') return null;
+    return rooms[rid] || null;
+}
+
 
 function normalizeGameMode(value) {
     return value === 'denpo' ? 'denpo' : 'ichimitsu';
@@ -79,6 +105,8 @@ function normalizeGameMode(value) {
 function answerCharLength(answer) {
     return Array.from(typeof answer === 'string' ? answer : '').length;
 }
+
+
 
 function compareSubmittedAt(a, b) {
     const timeDiff = (a.readyAt || 0) - (b.readyAt || 0);
@@ -250,7 +278,7 @@ function removePlayerFromRoom(rid, userId) {
 
 function normalizeEventIds({ rid, userId }) {
     return {
-        rid: normalizeText(rid, 20),
+        rid: normalizeRoomId(rid, 20),
         userId: normalizeText(userId, 80)
     };
 }
@@ -258,14 +286,14 @@ function normalizeEventIds({ rid, userId }) {
 io.on('connection', (socket) => {
     socket.on('join-room', ({ name, rid, userId, gameMode } = {}) => {
         const normalizedName = normalizeText(name, 20);
-        const normalizedRoomId = normalizeText(rid, 20);
+        const normalizedRoomId = normalizeRoomId(rid, 20);
         const normalizedUserId = normalizeText(userId, 80);
         const selectedMode = normalizeGameMode(gameMode);
 
         if (!normalizedName || !normalizedRoomId || !normalizedUserId) {
             socket.emit(
                 'error-msg',
-                '名前・部屋番号・ユーザー情報を確認してください。'
+                '名前・数字の部屋番号・ユーザー情報を確認してください。'
             );
             return;
         }
