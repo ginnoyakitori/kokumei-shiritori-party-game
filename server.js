@@ -63,7 +63,7 @@ function compareSubmittedAt(a, b) {
 }
 
 function compareDenpoAnswerOrder(a, b) {
-    const lenDiff = answerCharLength(a.answer) - answerCharLength(b.answer);
+    const lenDiff = a.answer.length - b.answer.length;
     if (lenDiff !== 0) return lenDiff;
     return compareSubmittedAt(a, b);
 }
@@ -153,7 +153,12 @@ function updateRoomData(rid) {
         // 全員一致: 入力が早い順でソート
         readyPlayers = room.members
             .filter((member) => member.answer !== null)
-            .sort((a, b) => a.readyAt - b.readyAt)
+            .sort(function compareSubmittedAt(a, b) {
+                        const timeDiff = (a.readyAt || 0) - (b.readyAt || 0);
+                        if (timeDiff !== 0) return timeDiff;
+                        return (a.readySeq || 0) - (b.readySeq || 0);
+}
+)
             .map((member, index) => ({
                 name: member.name,
                 order: index + 1
@@ -224,32 +229,23 @@ io.on('connection', (socket) => {
             }
 
             const room = rooms[normalizedRoomId];
-            let player = getPlayerByUserId(room, normalizedUserId);
+            let player = room.members.find(p => p.id === userId);
 
             if (player) {
+    // 再接続
                 player.socketId = socket.id;
                 player.name = normalizedName;
-                console.log(`✅ Player ${normalizedUserId} rejoined.`);
             } else {
-                if (room.status === 'playing') {
-                    socket.emit('error-msg', '現在ゲーム進行中のため入室できません。');
-                    return;
-                }
-
-                if (room.members.length >= MAX_ROOM_SIZE) {
-                    socket.emit('error-msg', 'この部屋は満員です。');
-                    return;
-                }
-
                 player = {
-                    id: normalizedUserId,
+                    id: userId,
                     socketId: socket.id,
                     name: normalizedName,
                     answer: null,
                     readyAt: null,
                     readySeq: null
                 };
-                room.members.push(player);
+                if (room.members.find(m => m.id === userId)) return;
+
             }
 
             socket.join(normalizedRoomId);
@@ -309,6 +305,25 @@ io.on('connection', (socket) => {
         });
     });
 
+    socket.on('submit-answer', ({ rid, userId, answer }) => {
+    asyncQueue.enqueue(rid, async () => {
+
+        const room = getRoom(rid);
+        if (!room) return;
+
+        const player = getPlayerByUserId(room, userId);
+        if (!player || player.answer !== null) return;
+
+        player.answer = answer;
+        player.readyAt = Date.now();
+
+        room.answerSeq++;
+        player.readySeq = room.answerSeq;
+
+        updateRoomData(rid);
+    });
+});
+
     socket.on('submit-answer', ({ rid, userId, answer } = {}) => {
         const room = getRoom(rid);
         const normalizedAnswer = normalizeText(answer, 40);
@@ -328,10 +343,38 @@ io.on('connection', (socket) => {
             latestRoom.answerSeq = (latestRoom.answerSeq || 0) + 1;
             player.readySeq = latestRoom.answerSeq;
 
+
+            latestRoom.answerSeq = (latestRoom.answerSeq || 0) + 1;
+            player.readySeq = latestRoom.answerSeq;
+
             updateRoomData(rid);
 
         });
     });
+
+    socket.on('denpo-judge', ({ rid, userId }) => {
+    const room = getRoom(rid);
+    if (!room || !isHost(room, userId)) return;
+
+    asyncQueue.enqueue(rid, async () => {
+
+        const results = room.members
+            .filter(m => m.answer !== null)
+            .sort(compareDenpoAnswerOrder)
+            .map((m, i) => ({
+                name: m.name,
+                answer: m.answer,
+                order: i + 1
+            }));
+
+        io.to(rid).emit('show-result', {
+            results,
+            answeredCount: results.length,
+            totalCount: room.members.length,
+            gameMode: 'denpo'
+        });
+    });
+});
 
     socket.on('host-judge', ({ rid, userId } = {}) => {
         const room = getRoom(rid);
@@ -344,7 +387,12 @@ io.on('connection', (socket) => {
             // 入力が早い順でソート
             const results = latestRoom.members
                 .filter((member) => member.answer !== null)
-                .sort((a, b) => a.readyAt - b.readyAt)
+                .sort(function compareSubmittedAt(a, b) {
+                         const timeDiff = (a.readyAt || 0) - (b.readyAt || 0);
+                          if (timeDiff !== 0) return timeDiff;
+                        return (a.readySeq || 0) - (b.readySeq || 0);
+                    }
+)
                 .map((member) => ({
                     name: member.name,
                     answer: member.answer
@@ -449,7 +497,17 @@ io.on('connection', (socket) => {
                 const latestPlayer = getPlayerByUserId(latestRoom, player.id);
                 if (!latestPlayer) return;
 
-                latestPlayer.socketId = null;
+                player.socketId = null;
+
+                setTimeout(() => {
+                    const p = getPlayerByUserId(room, player.id);
+
+                    if (p && !p.socketId) {
+                        room.members = room.members.filter(m => m.id !== player.id);
+                        updateRoomData(rid);
+                    }
+                }, 30000);
+
                 updateRoomData(rid);
 
                 const waitTime = latestRoom.status === 'waiting' ? 1000 : DISCONNECT_GRACE_MS;
