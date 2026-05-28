@@ -5,6 +5,7 @@ const { Server } = require('socket.io');
 
 const app = express();
 const server = http.createServer(app);
+
 const io = new Server(server, {
     cors: { origin: '*' }
 });
@@ -12,7 +13,9 @@ const io = new Server(server, {
 app.use(express.static(path.join(__dirname, 'public')));
 
 const rooms = {};
-const DISCONNECT_GRACE_MS = 10 * 60 * 1000;
+
+const DISCONNECT_GRACE_MS_PLAYING = 10 * 60 * 1000;
+const DISCONNECT_GRACE_MS_WAITING = 30 * 1000;
 const MAX_ROOM_SIZE = 10000;
 
 class AsyncQueue {
@@ -22,31 +25,52 @@ class AsyncQueue {
     }
 
     enqueue(roomId, operation) {
+        if (!roomId) return;
+
         if (!this.queues[roomId]) {
             this.queues[roomId] = [];
         }
+
         this.queues[roomId].push(operation);
         this.process(roomId);
     }
 
     async process(roomId) {
-        if (this.processing[roomId] || !this.queues[roomId] || this.queues[roomId].length === 0) {
+        if (
+            this.processing[roomId] ||
+            !this.queues[roomId] ||
+            this.queues[roomId].length === 0
+        ) {
             return;
         }
+
         this.processing[roomId] = true;
+
         while (this.queues[roomId] && this.queues[roomId].length > 0) {
             const operation = this.queues[roomId].shift();
+
             try {
                 await operation();
             } catch (error) {
                 console.error(`Error processing room ${roomId}:`, error);
             }
         }
+
         this.processing[roomId] = false;
+
+        if (this.queues[roomId] && this.queues[roomId].length === 0) {
+            delete this.queues[roomId];
+            delete this.processing[roomId];
+        }
     }
 }
 
 const asyncQueue = new AsyncQueue();
+
+function normalizeText(value, maxLength = 60) {
+    if (typeof value !== 'string') return '';
+    return value.trim().replace(/\s+/g, ' ').slice(0, maxLength);
+}
 
 function normalizeGameMode(value) {
     return value === 'denpo' ? 'denpo' : 'ichimitsu';
@@ -59,19 +83,19 @@ function answerCharLength(answer) {
 function compareSubmittedAt(a, b) {
     const timeDiff = (a.readyAt || 0) - (b.readyAt || 0);
     if (timeDiff !== 0) return timeDiff;
+
     return (a.readySeq || 0) - (b.readySeq || 0);
 }
 
 function compareDenpoAnswerOrder(a, b) {
-    const lenDiff = a.answer.length - b.answer.length;
+    const lenDiff = answerCharLength(a.answer) - answerCharLength(b.answer);
     if (lenDiff !== 0) return lenDiff;
+
     return compareSubmittedAt(a, b);
 }
 
-
-function normalizeText(value, maxLength = 60) {
-    if (typeof value !== 'string') return '';
-    return value.trim().replace(/\s+/g, ' ').slice(0, maxLength);
+function isKatakanaOnly(value) {
+    return /^[\u30A0-\u30FF]+$/.test(value);
 }
 
 function getRoom(rid) {
@@ -89,9 +113,23 @@ function getPlayerByUserId(room, userId) {
     return room.members.find((member) => member.id === userId) || null;
 }
 
+function ensureRoomTurnIndex(room) {
+    if (!room || !room.members || room.members.length === 0) return;
+
+    room.turnIndex =
+        ((room.turnIndex % room.members.length) + room.members.length) %
+        room.members.length;
+}
+
+function getHost(room) {
+    if (!room || !room.members || room.members.length === 0) return null;
+
+    ensureRoomTurnIndex(room);
+    return room.members[room.turnIndex] || null;
+}
+
 function isHost(room, userId) {
-    if (!room || room.members.length === 0) return false;
-    const host = room.members[room.turnIndex % room.members.length];
+    const host = getHost(room);
     return !!host && host.id === userId;
 }
 
@@ -107,16 +145,55 @@ function resetAnswers(room) {
     });
 }
 
+function createRoom(gameMode) {
+    return {
+        turnIndex: 0,
+        members: [],
+        status: 'waiting',
+        currentQuestion: '',
+        gameMode: normalizeGameMode(gameMode),
+        answerSeq: 0
+    };
+}
 
-function ensureRoomTurnIndex(room) {
-    if (!room || room.members.length === 0) {
-        return;
+function createPlayer({ id, socketId, name }) {
+    return {
+        id,
+        socketId,
+        name,
+        answer: null,
+        readyAt: null,
+        readySeq: null
+    };
+}
+
+function getReadyMembers(room) {
+    if (!room || !room.members) return [];
+
+    const answeredMembers = room.members.filter(
+        (member) => member.answer !== null
+    );
+
+    if (room.gameMode === 'denpo') {
+        return answeredMembers
+            .sort(compareDenpoAnswerOrder)
+            .map((member, index) => ({
+                name: member.name,
+                order: index + 1
+            }));
     }
-    room.turnIndex = ((room.turnIndex % room.members.length) + room.members.length) % room.members.length;
+
+    return answeredMembers
+        .sort(compareSubmittedAt)
+        .map((member, index) => ({
+            name: member.name,
+            order: index + 1
+        }));
 }
 
 function updateRoomData(rid) {
     const room = rooms[rid];
+
     if (!room || !room.members) return;
 
     if (room.members.length === 0) {
@@ -125,7 +202,8 @@ function updateRoomData(rid) {
     }
 
     ensureRoomTurnIndex(room);
-    const host = room.members[room.turnIndex];
+
+    const host = getHost(room);
 
     const allMembers = room.members.map((member) => ({
         id: member.id,
@@ -134,41 +212,10 @@ function updateRoomData(rid) {
         isOnline: !!member.socketId
     }));
 
-    // ゲームモードに応じて異なるソート順序
-    let readyPlayers = [];
-    if (room.gameMode === 'denpo') {
-        // デンポー: 文字数が少ない順 → 入力が早い順でソート
-        readyPlayers = room.members
-            .filter((member) => member.answer !== null)
-            .sort((a, b) => {
-                const lenDiff = a.answer.length - b.answer.length;
-                if (lenDiff !== 0) return lenDiff;
-                return a.readyAt - b.readyAt;
-            })
-            .map((member, index) => ({
-                name: member.name,
-                order: index + 1
-            }));
-    } else {
-        // 全員一致: 入力が早い順でソート
-        readyPlayers = room.members
-            .filter((member) => member.answer !== null)
-            .sort(function compareSubmittedAt(a, b) {
-                        const timeDiff = (a.readyAt || 0) - (b.readyAt || 0);
-                        if (timeDiff !== 0) return timeDiff;
-                        return (a.readySeq || 0) - (b.readySeq || 0);
-}
-)
-            .map((member, index) => ({
-                name: member.name,
-                order: index + 1
-            }));
-    }
-
     io.to(rid).emit('room-data', {
         rid,
         allMembers,
-        readyMembers: readyPlayers,
+        readyMembers: getReadyMembers(room),
         totalMemberCount: room.members.length,
         status: room.status,
         hostId: host ? host.id : null,
@@ -180,9 +227,10 @@ function updateRoomData(rid) {
 
 function removePlayerFromRoom(rid, userId) {
     const room = rooms[rid];
-    if (!room) return;
+    if (!room || !room.members) return false;
 
     const initialLength = room.members.length;
+
     room.members = room.members.filter((member) => member.id !== userId);
 
     if (room.members.length === initialLength) {
@@ -196,7 +244,15 @@ function removePlayerFromRoom(rid, userId) {
 
     ensureRoomTurnIndex(room);
     updateRoomData(rid);
+
     return true;
+}
+
+function normalizeEventIds({ rid, userId }) {
+    return {
+        rid: normalizeText(rid, 20),
+        userId: normalizeText(userId, 80)
+    };
 }
 
 io.on('connection', (socket) => {
@@ -204,49 +260,56 @@ io.on('connection', (socket) => {
         const normalizedName = normalizeText(name, 20);
         const normalizedRoomId = normalizeText(rid, 20);
         const normalizedUserId = normalizeText(userId, 80);
+        const selectedMode = normalizeGameMode(gameMode);
 
         if (!normalizedName || !normalizedRoomId || !normalizedUserId) {
-            socket.emit('error-msg', '名前・部屋番号・ユーザー情報を確認してください。');
-            return;
-        }
-
-        if (rooms[normalizedRoomId] && rooms[normalizedRoomId].members.length >= MAX_ROOM_SIZE) {
-            socket.emit('error-msg', 'この部屋は満員です。');
+            socket.emit(
+                'error-msg',
+                '名前・部屋番号・ユーザー情報を確認してください。'
+            );
             return;
         }
 
         asyncQueue.enqueue(normalizedRoomId, async () => {
             if (!rooms[normalizedRoomId]) {
-                rooms[normalizedRoomId] = {
-                    turnIndex: 0,
-                    members: [],
-                    status: 'waiting',
-                    currentQuestion: '',
-                    gameMode: normalizeGameMode(gameMode),
-                    answerSeq: 0
-                };
-
+                rooms[normalizedRoomId] = createRoom(selectedMode);
             }
 
             const room = rooms[normalizedRoomId];
-            let player = room.members.find(p => p.id === userId);
+
+            let player = getPlayerByUserId(room, normalizedUserId);
 
             if (player) {
-    // 再接続
                 player.socketId = socket.id;
                 player.name = normalizedName;
-            } else {
-                player = {
-                    id: userId,
-                    socketId: socket.id,
-                    name: normalizedName,
-                    answer: null,
-                    readyAt: null,
-                    readySeq: null
-                };
-                if (room.members.find(m => m.id === userId)) return;
 
+                socket.join(normalizedRoomId);
+                updateRoomData(normalizedRoomId);
+
+                console.log(`✅ Player ${normalizedUserId} rejoined room ${normalizedRoomId}.`);
+                return;
             }
+
+            if (room.status === 'playing') {
+                socket.emit(
+                    'error-msg',
+                    '現在ゲーム進行中のため新規入室できません。'
+                );
+                return;
+            }
+
+            if (room.members.length >= MAX_ROOM_SIZE) {
+                socket.emit('error-msg', 'この部屋は満員です。');
+                return;
+            }
+
+            player = createPlayer({
+                id: normalizedUserId,
+                socketId: socket.id,
+                name: normalizedName
+            });
+
+            room.members.push(player);
 
             socket.join(normalizedRoomId);
             updateRoomData(normalizedRoomId);
@@ -254,183 +317,158 @@ io.on('connection', (socket) => {
     });
 
     socket.on('go-to-setup', ({ rid, userId, gameMode } = {}) => {
-    const room = getRoom(rid);
-    if (!room || !isHost(room, userId)) return;
+        const ids = normalizeEventIds({ rid, userId });
+        const selectedMode = normalizeGameMode(gameMode);
 
-    const selectedMode = normalizeGameMode(gameMode);
+        if (!ids.rid || !ids.userId) return;
 
-    asyncQueue.enqueue(rid, async () => {
-        const latestRoom = getRoom(rid);
-        if (!latestRoom || !isHost(latestRoom, userId)) return;
+        asyncQueue.enqueue(ids.rid, async () => {
+            const room = getRoom(ids.rid);
+            if (!room || !isHost(room, ids.userId)) return;
 
-        latestRoom.gameMode = selectedMode;
-        latestRoom.status = 'playing';
-        latestRoom.currentQuestion = '';
-        resetAnswers(latestRoom);
-        io.to(rid).emit('move-to-setup');
+            room.gameMode = selectedMode;
+            room.status = 'playing';
+            room.currentQuestion = '';
+            resetAnswers(room);
+
+            io.to(ids.rid).emit('move-to-setup');
+            updateRoomData(ids.rid);
+        });
     });
-});
-
 
     socket.on('back-to-waiting', ({ rid, userId } = {}) => {
-        const room = getRoom(rid);
-        if (!room || !isHost(room, userId)) return;
+        const ids = normalizeEventIds({ rid, userId });
 
-        asyncQueue.enqueue(rid, async () => {
-            const latestRoom = getRoom(rid);
-            if (!latestRoom || !isHost(latestRoom, userId)) return;
+        if (!ids.rid || !ids.userId) return;
 
-            latestRoom.status = 'waiting';
-            latestRoom.currentQuestion = '';
-            resetAnswers(latestRoom);
-            io.to(rid).emit('move-to-waiting');
-            updateRoomData(rid);
+        asyncQueue.enqueue(ids.rid, async () => {
+            const room = getRoom(ids.rid);
+            if (!room || !isHost(room, ids.userId)) return;
+
+            room.status = 'waiting';
+            room.currentQuestion = '';
+            resetAnswers(room);
+
+            io.to(ids.rid).emit('move-to-waiting');
+            updateRoomData(ids.rid);
         });
     });
 
     socket.on('send-question', ({ rid, userId, question } = {}) => {
-        const room = getRoom(rid);
+        const ids = normalizeEventIds({ rid, userId });
         const normalizedQuestion = normalizeText(question, 80);
-        if (!room || !isHost(room, userId) || !normalizedQuestion) return;
 
-        asyncQueue.enqueue(rid, async () => {
-            const latestRoom = getRoom(rid);
-            if (!latestRoom || !isHost(latestRoom, userId)) return;
+        if (!ids.rid || !ids.userId || !normalizedQuestion) return;
 
-            latestRoom.status = 'playing';
-            latestRoom.currentQuestion = normalizedQuestion;
-            resetAnswers(latestRoom);
-            io.to(rid).emit('receive-question', { question: normalizedQuestion });
-            updateRoomData(rid);
+        asyncQueue.enqueue(ids.rid, async () => {
+            const room = getRoom(ids.rid);
+            if (!room || !isHost(room, ids.userId)) return;
+
+            room.status = 'playing';
+            room.currentQuestion = normalizedQuestion;
+            resetAnswers(room);
+
+            io.to(ids.rid).emit('receive-question', {
+                question: normalizedQuestion
+            });
+
+            updateRoomData(ids.rid);
         });
     });
 
-    socket.on('submit-answer', ({ rid, userId, answer }) => {
-    asyncQueue.enqueue(rid, async () => {
-
-        const room = getRoom(rid);
-        if (!room) return;
-
-        const player = getPlayerByUserId(room, userId);
-        if (!player || player.answer !== null) return;
-
-        player.answer = answer;
-        player.readyAt = Date.now();
-
-        room.answerSeq++;
-        player.readySeq = room.answerSeq;
-
-        updateRoomData(rid);
-    });
-});
-
     socket.on('submit-answer', ({ rid, userId, answer } = {}) => {
-        const room = getRoom(rid);
+        const ids = normalizeEventIds({ rid, userId });
         const normalizedAnswer = normalizeText(answer, 40);
-        
-        if (!room || !room.currentQuestion || !normalizedAnswer) return;
 
-        asyncQueue.enqueue(rid, async () => {
-            const latestRoom = getRoom(rid);
-            if (!latestRoom || !latestRoom.currentQuestion) return;
+        if (!ids.rid || !ids.userId || !normalizedAnswer) return;
 
-            const player = getPlayerByUserId(latestRoom, userId);
-            if (!player || player.socketId !== socket.id || player.answer !== null) return;
+        asyncQueue.enqueue(ids.rid, async () => {
+            const room = getRoom(ids.rid);
+
+            if (!room || !room.currentQuestion) return;
+
+            const player = getPlayerByUserId(room, ids.userId);
+
+            if (!player) return;
+            if (player.socketId !== socket.id) return;
+            if (player.answer !== null) return;
+
+            if (room.gameMode === 'denpo' && !isKatakanaOnly(normalizedAnswer)) {
+                socket.emit(
+                    'error-msg',
+                    'デンポーではカタカナのみ入力できます。'
+                );
+                return;
+            }
 
             player.answer = normalizedAnswer;
             player.readyAt = Date.now();
 
-            latestRoom.answerSeq = (latestRoom.answerSeq || 0) + 1;
-            player.readySeq = latestRoom.answerSeq;
+            room.answerSeq = (room.answerSeq || 0) + 1;
+            player.readySeq = room.answerSeq;
 
-
-            latestRoom.answerSeq = (latestRoom.answerSeq || 0) + 1;
-            player.readySeq = latestRoom.answerSeq;
-
-            updateRoomData(rid);
-
+            updateRoomData(ids.rid);
         });
     });
-
-    socket.on('denpo-judge', ({ rid, userId }) => {
-    const room = getRoom(rid);
-    if (!room || !isHost(room, userId)) return;
-
-    asyncQueue.enqueue(rid, async () => {
-
-        const results = room.members
-            .filter(m => m.answer !== null)
-            .sort(compareDenpoAnswerOrder)
-            .map((m, i) => ({
-                name: m.name,
-                answer: m.answer,
-                order: i + 1
-            }));
-
-        io.to(rid).emit('show-result', {
-            results,
-            answeredCount: results.length,
-            totalCount: room.members.length,
-            gameMode: 'denpo'
-        });
-    });
-});
 
     socket.on('host-judge', ({ rid, userId } = {}) => {
-        const room = getRoom(rid);
-        if (!room || !isHost(room, userId)) return;
+        const ids = normalizeEventIds({ rid, userId });
 
-        asyncQueue.enqueue(rid, async () => {
-            const latestRoom = getRoom(rid);
-            if (!latestRoom || !isHost(latestRoom, userId)) return;
+        if (!ids.rid || !ids.userId) return;
 
-            // 入力が早い順でソート
-            const results = latestRoom.members
+        asyncQueue.enqueue(ids.rid, async () => {
+            const room = getRoom(ids.rid);
+            if (!room || !isHost(room, ids.userId)) return;
+
+            const results = room.members
                 .filter((member) => member.answer !== null)
-                .sort(function compareSubmittedAt(a, b) {
-                         const timeDiff = (a.readyAt || 0) - (b.readyAt || 0);
-                          if (timeDiff !== 0) return timeDiff;
-                        return (a.readySeq || 0) - (b.readySeq || 0);
-                    }
-)
+                .sort(compareSubmittedAt)
                 .map((member) => ({
                     name: member.name,
                     answer: member.answer
                 }));
 
-            // 全員一致の判定
-            if (results.length > 0) {
-                const normalizedAnswers = results.map((member) => member.answer.toLowerCase());
-                const firstAnswer = normalizedAnswers[0];
-                const isMatch = normalizedAnswers.every((answer) => answer === firstAnswer);
-                
-                io.to(rid).emit('show-result', { 
-                    results, 
-                    isMatch,
-                    answeredCount: results.length,
-                    totalCount: latestRoom.members.length
-                });
-            } else {
-                io.to(rid).emit('show-result', { 
-                    results: [], 
+            if (results.length === 0) {
+                io.to(ids.rid).emit('show-result', {
+                    results: [],
                     isMatch: false,
                     answeredCount: 0,
-                    totalCount: latestRoom.members.length
+                    totalCount: room.members.length,
+                    gameMode: 'ichimitsu'
                 });
+                return;
             }
+
+            const normalizedAnswers = results.map((result) =>
+                result.answer.toLowerCase()
+            );
+
+            const firstAnswer = normalizedAnswers[0];
+
+            const isMatch = normalizedAnswers.every(
+                (answer) => answer === firstAnswer
+            );
+
+            io.to(ids.rid).emit('show-result', {
+                results,
+                isMatch,
+                answeredCount: results.length,
+                totalCount: room.members.length,
+                gameMode: 'ichimitsu'
+            });
         });
     });
 
     socket.on('denpo-judge', ({ rid, userId } = {}) => {
-        const room = getRoom(rid);
-        if (!room || !isHost(room, userId)) return;
+        const ids = normalizeEventIds({ rid, userId });
 
-        asyncQueue.enqueue(rid, async () => {
-            const latestRoom = getRoom(rid);
-            if (!latestRoom || !isHost(latestRoom, userId)) return;
+        if (!ids.rid || !ids.userId) return;
 
-            // 入力が早い順でソート
-            const results = latestRoom.members
+        asyncQueue.enqueue(ids.rid, async () => {
+            const room = getRoom(ids.rid);
+            if (!room || !isHost(room, ids.userId)) return;
+
+            const results = room.members
                 .filter((member) => member.answer !== null)
                 .sort(compareDenpoAnswerOrder)
                 .map((member, index) => ({
@@ -438,47 +476,52 @@ io.on('connection', (socket) => {
                     answer: member.answer,
                     order: index + 1
                 }));
-``
 
-            io.to(rid).emit('show-result', { 
-                results, 
-                isMatch: false,
+            io.to(ids.rid).emit('show-result', {
+                results,
                 answeredCount: results.length,
-                totalCount: latestRoom.members.length,
+                totalCount: room.members.length,
                 gameMode: 'denpo'
             });
         });
     });
 
     socket.on('next-round', ({ rid, userId } = {}) => {
-        const room = getRoom(rid);
-        if (!room || !isHost(room, userId) || room.members.length === 0) return;
+        const ids = normalizeEventIds({ rid, userId });
 
-        asyncQueue.enqueue(rid, async () => {
-            const latestRoom = getRoom(rid);
-            if (!latestRoom || !isHost(latestRoom, userId) || latestRoom.members.length === 0) return;
+        if (!ids.rid || !ids.userId) return;
 
-            latestRoom.turnIndex = (latestRoom.turnIndex + 1) % latestRoom.members.length;
-            latestRoom.currentQuestion = '';
-            resetAnswers(latestRoom);
-            updateRoomData(rid);
-            io.to(rid).emit('prepare-next-round');
+        asyncQueue.enqueue(ids.rid, async () => {
+            const room = getRoom(ids.rid);
+
+            if (!room || !isHost(room, ids.userId)) return;
+            if (!room.members || room.members.length === 0) return;
+
+            room.turnIndex = (room.turnIndex + 1) % room.members.length;
+            room.currentQuestion = '';
+            resetAnswers(room);
+
+            updateRoomData(ids.rid);
+            io.to(ids.rid).emit('prepare-next-round');
         });
     });
 
     socket.on('leave-room', ({ rid, userId } = {}) => {
-        const room = getRoom(rid);
-        if (!room) return;
+        const ids = normalizeEventIds({ rid, userId });
 
-        asyncQueue.enqueue(rid, async () => {
-            const latestRoom = getRoom(rid);
-            if (!latestRoom) return;
+        if (!ids.rid || !ids.userId) return;
 
-            const player = getPlayerByUserId(latestRoom, userId);
+        asyncQueue.enqueue(ids.rid, async () => {
+            const room = getRoom(ids.rid);
+            if (!room) return;
+
+            const player = getPlayerByUserId(room, ids.userId);
+
             if (!player || player.socketId !== socket.id) return;
 
-            socket.leave(rid);
-            removePlayerFromRoom(rid, userId);
+            socket.leave(ids.rid);
+            removePlayerFromRoom(ids.rid, ids.userId);
+
             socket.emit('left-success');
         });
     });
@@ -488,36 +531,40 @@ io.on('connection', (socket) => {
             if (!room || !room.members) return;
 
             const player = getPlayerBySocket(room, socket.id);
+
             if (!player) return;
 
             asyncQueue.enqueue(rid, async () => {
-                const latestRoom = rooms[rid];
+                const latestRoom = getRoom(rid);
                 if (!latestRoom) return;
 
                 const latestPlayer = getPlayerByUserId(latestRoom, player.id);
                 if (!latestPlayer) return;
 
-                player.socketId = null;
+                if (latestPlayer.socketId !== socket.id) return;
 
-                setTimeout(() => {
-                    const p = getPlayerByUserId(room, player.id);
-
-                    if (p && !p.socketId) {
-                        room.members = room.members.filter(m => m.id !== player.id);
-                        updateRoomData(rid);
-                    }
-                }, 30000);
+                latestPlayer.socketId = null;
 
                 updateRoomData(rid);
 
-                const waitTime = latestRoom.status === 'waiting' ? 1000 : DISCONNECT_GRACE_MS;
-                
+                const waitTime =
+                    latestRoom.status === 'playing'
+                        ? DISCONNECT_GRACE_MS_PLAYING
+                        : DISCONNECT_GRACE_MS_WAITING;
+
                 setTimeout(() => {
                     asyncQueue.enqueue(rid, async () => {
-                        const finalRoom = rooms[rid];
-                        const finalPlayer = finalRoom ? getPlayerByUserId(finalRoom, player.id) : null;
+                        const finalRoom = getRoom(rid);
+                        if (!finalRoom) return;
 
-                        if (finalRoom && finalPlayer && !finalPlayer.socketId) {
+                        const finalPlayer = getPlayerByUserId(
+                            finalRoom,
+                            player.id
+                        );
+
+                        if (!finalPlayer) return;
+
+                        if (!finalPlayer.socketId) {
                             removePlayerFromRoom(rid, player.id);
                         }
                     });
@@ -528,7 +575,8 @@ io.on('connection', (socket) => {
 });
 
 const PORT = process.env.PORT || 10000;
+
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`Server started on port ${PORT}`);
-    console.log(`✅ 全員一致＆デンポーゲームに対応しました`);
+    console.log('✅ 全員一致＆デンポーゲームに対応しました');
 });
