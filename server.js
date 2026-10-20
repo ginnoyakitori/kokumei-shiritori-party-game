@@ -7,16 +7,32 @@ const app = express();
 const server = http.createServer(app);
 
 const io = new Server(server, {
-    cors: { origin: '*' }
+    cors: { origin: '*' },
+    // 不正に大きなペイロードでメモリを食われないようにする
+    maxHttpBufferSize: 16 * 1024,
+    // 大人数・低速回線でも不必要に切断されにくくする
+    pingInterval: 25000,
+    pingTimeout: 60000
 });
 
 app.use(express.static(path.join(__dirname, 'public')));
+app.get('/healthz', (req, res) => res.status(200).send('ok'));
 
 const rooms = {};
+// socket.id -> { rid, userId }  (disconnect時に全部屋を走査しないための索引)
+const socketSessions = new Map();
 
 const DISCONNECT_GRACE_MS_PLAYING = 10 * 60 * 1000;
 const DISCONNECT_GRACE_MS_WAITING = 30 * 1000;
 const MAX_ROOM_SIZE = 10000;
+const MAX_ROOMS = 5000;
+
+// room-data のブロードキャスト最小間隔(大人数で提出が殺到しても送信量を抑える)
+const ROOM_UPDATE_INTERVAL_MS = 150;
+
+// 1ソケットあたりのイベント数制限
+const RATE_LIMIT_WINDOW_MS = 5000;
+const RATE_LIMIT_MAX = 40;
 
 class AsyncQueue {
     constructor() {
@@ -67,7 +83,7 @@ class AsyncQueue {
 
 const asyncQueue = new AsyncQueue();
 
-
+/* ---------- ユーティリティ ---------- */
 
 function normalizeText(value, maxLength = 60) {
     if (typeof value !== 'string') return '';
@@ -92,12 +108,6 @@ function normalizeRoomId(value, maxLength = 20) {
     return normalized.slice(0, maxLength);
 }
 
-function getRoom(rid) {
-    if (typeof rid !== 'string') return null;
-    return rooms[rid] || null;
-}
-
-
 function normalizeGameMode(value) {
     return value === 'denpo' ? 'denpo' : 'ichimitsu';
 }
@@ -106,7 +116,10 @@ function answerCharLength(answer) {
     return Array.from(typeof answer === 'string' ? answer : '').length;
 }
 
-
+// 全員一致判定用: 全角/半角・大文字/小文字の違いを吸収する
+function normalizeForCompare(answer) {
+    return String(answer).normalize('NFKC').toLowerCase();
+}
 
 function compareSubmittedAt(a, b) {
     const timeDiff = (a.readyAt || 0) - (b.readyAt || 0);
@@ -126,6 +139,8 @@ function isKatakanaOnly(value) {
     return /^[\u30A0-\u30FF]+$/.test(value);
 }
 
+/* ---------- ルーム / プレイヤー ---------- */
+
 function getRoom(rid) {
     if (typeof rid !== 'string') return null;
     return rooms[rid] || null;
@@ -139,6 +154,25 @@ function getPlayerBySocket(room, socketId) {
 function getPlayerByUserId(room, userId) {
     if (!room || !room.members) return null;
     return room.members.find((member) => member.id === userId) || null;
+}
+
+// 同名プレイヤーがいると結果画面で区別できないので連番を付ける
+function makeUniqueName(room, name, excludeUserId) {
+    const used = new Set(
+        room.members
+            .filter((member) => member.id !== excludeUserId)
+            .map((member) => member.name)
+    );
+
+    if (!used.has(name)) return name;
+
+    for (let n = 2; n < MAX_ROOM_SIZE + 2; n++) {
+        const suffix = `(${n})`;
+        const candidate = name.slice(0, 20 - suffix.length) + suffix;
+        if (!used.has(candidate)) return candidate;
+    }
+
+    return name;
 }
 
 function ensureRoomTurnIndex(room) {
@@ -180,7 +214,9 @@ function createRoom(gameMode) {
         status: 'waiting',
         currentQuestion: '',
         gameMode: normalizeGameMode(gameMode),
-        answerSeq: 0
+        answerSeq: 0,
+        updateTimer: null,
+        updatePending: false
     };
 }
 
@@ -191,8 +227,26 @@ function createPlayer({ id, socketId, name }) {
         name,
         answer: null,
         readyAt: null,
-        readySeq: null
+        readySeq: null,
+        disconnectTimer: null
     };
+}
+
+function clearDisconnectTimer(player) {
+    if (player && player.disconnectTimer) {
+        clearTimeout(player.disconnectTimer);
+        player.disconnectTimer = null;
+    }
+}
+
+function destroyRoom(rid) {
+    const room = rooms[rid];
+    if (!room) return;
+
+    if (room.updateTimer) clearTimeout(room.updateTimer);
+    (room.members || []).forEach(clearDisconnectTimer);
+
+    delete rooms[rid];
 }
 
 function getReadyMembers(room) {
@@ -202,41 +256,34 @@ function getReadyMembers(room) {
         (member) => member.answer !== null
     );
 
-    if (room.gameMode === 'denpo') {
-        return answeredMembers
-            .sort(compareDenpoAnswerOrder)
-            .map((member, index) => ({
-                name: member.name,
-                order: index + 1
-            }));
-    }
+    const comparator =
+        room.gameMode === 'denpo' ? compareDenpoAnswerOrder : compareSubmittedAt;
 
-    return answeredMembers
-        .sort(compareSubmittedAt)
-        .map((member, index) => ({
-            name: member.name,
-            order: index + 1
-        }));
+    return answeredMembers.sort(comparator).map((member, index) => ({
+        name: member.name,
+        order: index + 1
+    }));
 }
 
-function updateRoomData(rid) {
+function emitRoomData(rid) {
     const room = rooms[rid];
 
     if (!room || !room.members) return;
 
     if (room.members.length === 0) {
-        delete rooms[rid];
+        destroyRoom(rid);
         return;
     }
 
     ensureRoomTurnIndex(room);
 
     const host = getHost(room);
+    const hostId = host ? host.id : null;
 
     const allMembers = room.members.map((member) => ({
         id: member.id,
         name: member.name,
-        isHost: member.id === (host ? host.id : null),
+        isHost: member.id === hostId,
         isOnline: !!member.socketId
     }));
 
@@ -246,32 +293,89 @@ function updateRoomData(rid) {
         readyMembers: getReadyMembers(room),
         totalMemberCount: room.members.length,
         status: room.status,
-        hostId: host ? host.id : null,
+        hostId,
         hasQuestion: Boolean(room.currentQuestion),
         currentQuestion: room.currentQuestion || '',
         gameMode: room.gameMode || 'ichimitsu'
     });
 }
 
+/**
+ * room-data を送る。
+ * - immediate: true  → 状態遷移など、順序が重要なとき。即座に送る
+ * - immediate: false → 提出/接続状況の変化など。ROOM_UPDATE_INTERVAL_MS 内の連続更新は1回にまとめる
+ */
+function updateRoomData(rid, { immediate = true } = {}) {
+    const room = rooms[rid];
+    if (!room) return;
+
+    if (immediate) {
+        if (room.updateTimer) {
+            clearTimeout(room.updateTimer);
+            room.updateTimer = null;
+        }
+        room.updatePending = false;
+        emitRoomData(rid);
+        return;
+    }
+
+    if (room.updateTimer) {
+        room.updatePending = true;
+        return;
+    }
+
+    emitRoomData(rid);
+
+    room.updateTimer = setTimeout(() => {
+        const current = rooms[rid];
+        if (!current) return;
+
+        current.updateTimer = null;
+
+        if (current.updatePending) {
+            current.updatePending = false;
+            updateRoomData(rid, { immediate: false });
+        }
+    }, ROOM_UPDATE_INTERVAL_MS);
+}
+
 function removePlayerFromRoom(rid, userId) {
     const room = rooms[rid];
     if (!room || !room.members) return false;
 
-    const initialLength = room.members.length;
+    const index = room.members.findIndex((member) => member.id === userId);
+    if (index === -1) return false;
 
-    room.members = room.members.filter((member) => member.id !== userId);
+    ensureRoomTurnIndex(room);
 
-    if (room.members.length === initialLength) {
-        return false;
-    }
+    const wasHost = index === room.turnIndex;
+
+    clearDisconnectTimer(room.members[index]);
+    room.members.splice(index, 1);
 
     if (room.members.length === 0) {
-        delete rooms[rid];
+        destroyRoom(rid);
         return true;
     }
 
+    // ホストより前の人が抜けても、ホストが別の人に変わらないようにずらす
+    if (index < room.turnIndex) {
+        room.turnIndex -= 1;
+    }
     ensureRoomTurnIndex(room);
-    updateRoomData(rid);
+
+    // ホストが抜けた場合は、次の人がホストになり、お題入力からやり直す
+    const needsReset = wasHost && room.status === 'playing';
+    if (needsReset) {
+        room.currentQuestion = '';
+        resetAnswers(room);
+    }
+
+    updateRoomData(rid, { immediate: true });
+
+    if (needsReset) {
+        io.to(rid).emit('prepare-next-round');
+    }
 
     return true;
 }
@@ -283,8 +387,86 @@ function normalizeEventIds({ rid, userId }) {
     };
 }
 
+function scheduleDisconnectRemoval(rid, player, room) {
+    clearDisconnectTimer(player);
+
+    const waitTime =
+        room.status === 'playing'
+            ? DISCONNECT_GRACE_MS_PLAYING
+            : DISCONNECT_GRACE_MS_WAITING;
+
+    player.disconnectTimer = setTimeout(() => {
+        asyncQueue.enqueue(rid, async () => {
+            const finalRoom = getRoom(rid);
+            if (!finalRoom) return;
+
+            const finalPlayer = getPlayerByUserId(finalRoom, player.id);
+            if (!finalPlayer) return;
+
+            finalPlayer.disconnectTimer = null;
+
+            if (!finalPlayer.socketId) {
+                removePlayerFromRoom(rid, player.id);
+            }
+        });
+    }, waitTime);
+}
+
+/* ---------- ソケット ---------- */
+
+function allowEvent(socket) {
+    const now = Date.now();
+    const rate = socket.data.rate || { count: 0, resetAt: now + RATE_LIMIT_WINDOW_MS };
+
+    if (now >= rate.resetAt) {
+        rate.count = 0;
+        rate.resetAt = now + RATE_LIMIT_WINDOW_MS;
+    }
+
+    rate.count += 1;
+    socket.data.rate = rate;
+
+    return rate.count <= RATE_LIMIT_MAX;
+}
+
+// payload が null / 文字列などでも落ちないようにし、例外でプロセスが死なないようにする
+function safeOn(socket, event, handler) {
+    socket.on(event, (payload) => {
+        if (!allowEvent(socket)) return;
+
+        try {
+            const safePayload =
+                payload && typeof payload === 'object' ? payload : {};
+            handler(safePayload);
+        } catch (error) {
+            console.error(`Error in "${event}" handler:`, error);
+        }
+    });
+}
+
+// このソケットが別の部屋/ユーザーとして参加済みなら、そちらから外す
+function detachPreviousSession(socket, nextRid, nextUserId) {
+    const previous = socketSessions.get(socket.id);
+    if (!previous) return;
+
+    if (previous.rid === nextRid && previous.userId === nextUserId) return;
+
+    socketSessions.delete(socket.id);
+    socket.leave(previous.rid);
+
+    asyncQueue.enqueue(previous.rid, async () => {
+        const room = getRoom(previous.rid);
+        if (!room) return;
+
+        const player = getPlayerByUserId(room, previous.userId);
+        if (player && player.socketId === socket.id) {
+            removePlayerFromRoom(previous.rid, previous.userId);
+        }
+    });
+}
+
 io.on('connection', (socket) => {
-    socket.on('join-room', ({ name, rid, userId, gameMode } = {}) => {
+    safeOn(socket, 'join-room', ({ name, rid, userId, gameMode }) => {
         const normalizedName = normalizeText(name, 20);
         const normalizedRoomId = normalizeRoomId(rid, 20);
         const normalizedUserId = normalizeText(userId, 80);
@@ -298,24 +480,55 @@ io.on('connection', (socket) => {
             return;
         }
 
+        detachPreviousSession(socket, normalizedRoomId, normalizedUserId);
+
         asyncQueue.enqueue(normalizedRoomId, async () => {
-            if (!rooms[normalizedRoomId]) {
-                rooms[normalizedRoomId] = createRoom(selectedMode);
+            let room = rooms[normalizedRoomId];
+            let player = room
+                ? getPlayerByUserId(room, normalizedUserId)
+                : null;
+
+            // 再接続
+            if (player) {
+                // 別タブ/別端末の古い接続は切り離す
+                if (player.socketId && player.socketId !== socket.id) {
+                    const oldSocket = io.sockets.sockets.get(player.socketId);
+                    socketSessions.delete(player.socketId);
+                    if (oldSocket) oldSocket.leave(normalizedRoomId);
+                }
+
+                clearDisconnectTimer(player);
+
+                player.socketId = socket.id;
+                player.name = makeUniqueName(
+                    room,
+                    normalizedName,
+                    normalizedUserId
+                );
+
+                socketSessions.set(socket.id, {
+                    rid: normalizedRoomId,
+                    userId: normalizedUserId
+                });
+                socket.join(normalizedRoomId);
+                updateRoomData(normalizedRoomId, { immediate: false });
+
+                console.log(
+                    `✅ Player ${normalizedUserId} rejoined room ${normalizedRoomId}.`
+                );
+                return;
             }
 
-            const room = rooms[normalizedRoomId];
+            if (!room) {
+                if (Object.keys(rooms).length >= MAX_ROOMS) {
+                    socket.emit(
+                        'error-msg',
+                        'ただいま部屋が混み合っています。しばらくしてからお試しください。'
+                    );
+                    return;
+                }
 
-            let player = getPlayerByUserId(room, normalizedUserId);
-
-            if (player) {
-                player.socketId = socket.id;
-                player.name = normalizedName;
-
-                socket.join(normalizedRoomId);
-                updateRoomData(normalizedRoomId);
-
-                console.log(`✅ Player ${normalizedUserId} rejoined room ${normalizedRoomId}.`);
-                return;
+                room = rooms[normalizedRoomId] = createRoom(selectedMode);
             }
 
             if (room.status === 'playing') {
@@ -334,17 +547,21 @@ io.on('connection', (socket) => {
             player = createPlayer({
                 id: normalizedUserId,
                 socketId: socket.id,
-                name: normalizedName
+                name: makeUniqueName(room, normalizedName, normalizedUserId)
             });
 
             room.members.push(player);
 
+            socketSessions.set(socket.id, {
+                rid: normalizedRoomId,
+                userId: normalizedUserId
+            });
             socket.join(normalizedRoomId);
-            updateRoomData(normalizedRoomId);
+            updateRoomData(normalizedRoomId, { immediate: false });
         });
     });
 
-    socket.on('go-to-setup', ({ rid, userId, gameMode } = {}) => {
+    safeOn(socket, 'go-to-setup', ({ rid, userId, gameMode }) => {
         const ids = normalizeEventIds({ rid, userId });
         const selectedMode = normalizeGameMode(gameMode);
 
@@ -360,11 +577,11 @@ io.on('connection', (socket) => {
             resetAnswers(room);
 
             io.to(ids.rid).emit('move-to-setup');
-            updateRoomData(ids.rid);
+            updateRoomData(ids.rid, { immediate: true });
         });
     });
 
-    socket.on('back-to-waiting', ({ rid, userId } = {}) => {
+    safeOn(socket, 'back-to-waiting', ({ rid, userId }) => {
         const ids = normalizeEventIds({ rid, userId });
 
         if (!ids.rid || !ids.userId) return;
@@ -378,11 +595,11 @@ io.on('connection', (socket) => {
             resetAnswers(room);
 
             io.to(ids.rid).emit('move-to-waiting');
-            updateRoomData(ids.rid);
+            updateRoomData(ids.rid, { immediate: true });
         });
     });
 
-    socket.on('send-question', ({ rid, userId, question } = {}) => {
+    safeOn(socket, 'send-question', ({ rid, userId, question }) => {
         const ids = normalizeEventIds({ rid, userId });
         const normalizedQuestion = normalizeText(question, 80);
 
@@ -400,11 +617,11 @@ io.on('connection', (socket) => {
                 question: normalizedQuestion
             });
 
-            updateRoomData(ids.rid);
+            updateRoomData(ids.rid, { immediate: true });
         });
     });
 
-    socket.on('submit-answer', ({ rid, userId, answer } = {}) => {
+    safeOn(socket, 'submit-answer', ({ rid, userId, answer }) => {
         const ids = normalizeEventIds({ rid, userId });
         const normalizedAnswer = normalizeText(answer, 40);
 
@@ -435,11 +652,12 @@ io.on('connection', (socket) => {
             room.answerSeq = (room.answerSeq || 0) + 1;
             player.readySeq = room.answerSeq;
 
-            updateRoomData(ids.rid);
+            // 大人数が同時に提出しても送信は一定間隔にまとめる
+            updateRoomData(ids.rid, { immediate: false });
         });
     });
 
-    socket.on('host-judge', ({ rid, userId } = {}) => {
+    safeOn(socket, 'host-judge', ({ rid, userId }) => {
         const ids = normalizeEventIds({ rid, userId });
 
         if (!ids.rid || !ids.userId) return;
@@ -467,14 +685,10 @@ io.on('connection', (socket) => {
                 return;
             }
 
-            const normalizedAnswers = results.map((result) =>
-                result.answer.toLowerCase()
-            );
+            const firstAnswer = normalizeForCompare(results[0].answer);
 
-            const firstAnswer = normalizedAnswers[0];
-
-            const isMatch = normalizedAnswers.every(
-                (answer) => answer === firstAnswer
+            const isMatch = results.every(
+                (result) => normalizeForCompare(result.answer) === firstAnswer
             );
 
             io.to(ids.rid).emit('show-result', {
@@ -487,7 +701,7 @@ io.on('connection', (socket) => {
         });
     });
 
-    socket.on('denpo-judge', ({ rid, userId } = {}) => {
+    safeOn(socket, 'denpo-judge', ({ rid, userId }) => {
         const ids = normalizeEventIds({ rid, userId });
 
         if (!ids.rid || !ids.userId) return;
@@ -514,7 +728,7 @@ io.on('connection', (socket) => {
         });
     });
 
-    socket.on('next-round', ({ rid, userId } = {}) => {
+    safeOn(socket, 'next-round', ({ rid, userId }) => {
         const ids = normalizeEventIds({ rid, userId });
 
         if (!ids.rid || !ids.userId) return;
@@ -529,12 +743,12 @@ io.on('connection', (socket) => {
             room.currentQuestion = '';
             resetAnswers(room);
 
-            updateRoomData(ids.rid);
+            updateRoomData(ids.rid, { immediate: true });
             io.to(ids.rid).emit('prepare-next-round');
         });
     });
 
-    socket.on('leave-room', ({ rid, userId } = {}) => {
+    safeOn(socket, 'leave-room', ({ rid, userId }) => {
         const ids = normalizeEventIds({ rid, userId });
 
         if (!ids.rid || !ids.userId) return;
@@ -547,6 +761,7 @@ io.on('connection', (socket) => {
 
             if (!player || player.socketId !== socket.id) return;
 
+            socketSessions.delete(socket.id);
             socket.leave(ids.rid);
             removePlayerFromRoom(ids.rid, ids.userId);
 
@@ -555,51 +770,38 @@ io.on('connection', (socket) => {
     });
 
     socket.on('disconnect', () => {
-        Object.entries(rooms).forEach(([rid, room]) => {
-            if (!room || !room.members) return;
+        // 全部屋を走査せず、索引から該当ルームだけを引く
+        const session = socketSessions.get(socket.id);
+        socketSessions.delete(socket.id);
 
-            const player = getPlayerBySocket(room, socket.id);
+        if (!session) return;
 
+        const { rid, userId } = session;
+
+        asyncQueue.enqueue(rid, async () => {
+            const room = getRoom(rid);
+            if (!room) return;
+
+            const player = getPlayerByUserId(room, userId);
             if (!player) return;
 
-            asyncQueue.enqueue(rid, async () => {
-                const latestRoom = getRoom(rid);
-                if (!latestRoom) return;
+            // すでに別のソケットで再接続済みなら何もしない
+            if (player.socketId !== socket.id) return;
 
-                const latestPlayer = getPlayerByUserId(latestRoom, player.id);
-                if (!latestPlayer) return;
+            player.socketId = null;
 
-                if (latestPlayer.socketId !== socket.id) return;
-
-                latestPlayer.socketId = null;
-
-                updateRoomData(rid);
-
-                const waitTime =
-                    latestRoom.status === 'playing'
-                        ? DISCONNECT_GRACE_MS_PLAYING
-                        : DISCONNECT_GRACE_MS_WAITING;
-
-                setTimeout(() => {
-                    asyncQueue.enqueue(rid, async () => {
-                        const finalRoom = getRoom(rid);
-                        if (!finalRoom) return;
-
-                        const finalPlayer = getPlayerByUserId(
-                            finalRoom,
-                            player.id
-                        );
-
-                        if (!finalPlayer) return;
-
-                        if (!finalPlayer.socketId) {
-                            removePlayerFromRoom(rid, player.id);
-                        }
-                    });
-                }, waitTime);
-            });
+            updateRoomData(rid, { immediate: false });
+            scheduleDisconnectRemoval(rid, player, room);
         });
     });
+});
+
+process.on('uncaughtException', (error) => {
+    console.error('Uncaught exception:', error);
+});
+
+process.on('unhandledRejection', (reason) => {
+    console.error('Unhandled rejection:', reason);
 });
 
 const PORT = process.env.PORT || 10000;
