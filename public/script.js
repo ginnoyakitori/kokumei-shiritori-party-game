@@ -12,6 +12,8 @@ let hasSubmitted = false;
 let gameMode = 'ichimitsu';
 let isConnected = false;
 let connectionRetries = 0;
+let activeResultMode = null;
+let verdictDecided = false;
 
 const MAX_RETRIES = 10;
 
@@ -404,13 +406,7 @@ socket.on('room-data', (data) => {
         );
     }
 
-    const resultView = getEl('view-result');
-    if (currentQuestion && resultView && !resultView.classList.contains('hidden')) {
-        const nextBtn = getEl('next-btn');
-        if (nextBtn) {
-            nextBtn.classList.add('hidden');
-        }
-    }
+    updateResultControls();
 
     if (data.status === 'playing' && data.hasQuestion) {
         const currentView = document.querySelector('.view:not(.hidden)');
@@ -427,6 +423,8 @@ socket.on('room-data', (data) => {
 });
 
 socket.on('move-to-setup', () => {
+    activeResultMode = null;
+    verdictDecided = false;
     hasSubmitted = false;
     currentQuestion = '';
 
@@ -445,6 +443,8 @@ socket.on('move-to-setup', () => {
 });
 
 socket.on('move-to-waiting', () => {
+    activeResultMode = null;
+    verdictDecided = false;
     hasSubmitted = false;
     currentQuestion = '';
 
@@ -470,6 +470,8 @@ socket.on('move-to-waiting', () => {
 socket.on('receive-question', (data) => {
     const nextQuestion = text(data && data.question).trim();
 
+    activeResultMode = null;
+    verdictDecided = false;
     hasSubmitted = false;
     currentQuestion = nextQuestion;
 
@@ -490,21 +492,51 @@ socket.on('receive-question', (data) => {
     show('view-game');
 });
 
+// 結果画面のボタン/メッセージ表示を、現在の状態から決める
+function updateResultControls() {
+    const resultView = getEl('view-result');
+    if (!resultView || resultView.classList.contains('hidden')) return;
+
+    const verdictArea = getEl('verdict-area');
+    const nextBtn = getEl('next-btn');
+
+    const waitingVerdict = activeResultMode === 'ichimitsu' && !verdictDecided;
+
+    if (verdictArea) {
+        verdictArea.classList.toggle('hidden', !(waitingVerdict && isHost));
+    }
+
+    if (nextBtn) {
+        nextBtn.classList.toggle('hidden', !(isHost && !waitingVerdict));
+    }
+
+    if (waitingVerdict) {
+        setBanner(
+            'result-message',
+            isHost
+                ? '回答を見て、全員一致か判定してください'
+                : '出題者が判定しています…'
+        );
+    }
+}
+
 socket.on('show-result', (data) => {
     const resultMode = normalizeGameMode(
         data && data.gameMode ? data.gameMode : gameMode
     );
 
     gameMode = resultMode;
+    activeResultMode = resultMode;
+    verdictDecided = false;
+
+    const matchBtn = getEl('verdict-match-btn');
+    const missBtn = getEl('verdict-miss-btn');
+    if (matchBtn) matchBtn.disabled = false;
+    if (missBtn) missBtn.disabled = false;
 
     show('view-result');
 
-    if (resultMode === 'ichimitsu') {
-        setBanner(
-            'result-message',
-            data && data.isMatch ? '✨ 全員一致 ✨' : '❌ 不一致 ❌'
-        );
-    } else {
+    if (resultMode !== 'ichimitsu') {
         setBanner('result-message', '');
     }
 
@@ -516,13 +548,26 @@ socket.on('show-result', (data) => {
         resultMode
     );
 
-    const nextBtn = getEl('next-btn');
-    if (nextBtn) {
-        nextBtn.classList.toggle('hidden', !isHost);
-    }
+    updateResultControls();
+});
+
+// 出題者が決めた「全員一致 / 不一致」を全員に表示する
+socket.on('show-verdict', (data) => {
+    if (activeResultMode !== 'ichimitsu') return;
+
+    verdictDecided = true;
+
+    setBanner(
+        'result-message',
+        data && data.isMatch ? '✨ 全員一致 ✨' : '❌ 不一致 ❌'
+    );
+
+    updateResultControls();
 });
 
 socket.on('prepare-next-round', () => {
+    activeResultMode = null;
+    verdictDecided = false;
     hasSubmitted = false;
     currentQuestion = '';
 
@@ -672,6 +717,27 @@ function openAll() {
             userId
         });
     }
+}
+
+function sendVerdict(isMatch) {
+    if (!isConnected) {
+        alert('サーバーに接続していません');
+        return;
+    }
+
+    if (!isHost || verdictDecided) return;
+
+    // 二重送信・押し間違いの連打を防ぐ
+    const matchBtn = getEl('verdict-match-btn');
+    const missBtn = getEl('verdict-miss-btn');
+    if (matchBtn) matchBtn.disabled = true;
+    if (missBtn) missBtn.disabled = true;
+
+    socket.emit('host-verdict', {
+        rid,
+        userId,
+        isMatch: Boolean(isMatch)
+    });
 }
 
 function nextRound() {

@@ -116,11 +116,6 @@ function answerCharLength(answer) {
     return Array.from(typeof answer === 'string' ? answer : '').length;
 }
 
-// 全員一致判定用: 全角/半角・大文字/小文字の違いを吸収する
-function normalizeForCompare(answer) {
-    return String(answer).normalize('NFKC').toLowerCase();
-}
-
 function compareSubmittedAt(a, b) {
     const timeDiff = (a.readyAt || 0) - (b.readyAt || 0);
     if (timeDiff !== 0) return timeDiff;
@@ -199,6 +194,7 @@ function resetAnswers(room) {
     if (!room || !room.members) return;
 
     room.answerSeq = 0;
+    room.resultShown = false;
 
     room.members.forEach((member) => {
         member.answer = null;
@@ -215,6 +211,7 @@ function createRoom(gameMode) {
         currentQuestion: '',
         gameMode: normalizeGameMode(gameMode),
         answerSeq: 0,
+        resultShown: false,
         updateTimer: null,
         updatePending: false
     };
@@ -657,6 +654,7 @@ io.on('connection', (socket) => {
         });
     });
 
+    // 回答を公開する。一致かどうかは自動判定せず、ホストが 'host-verdict' で決める
     safeOn(socket, 'host-judge', ({ rid, userId }) => {
         const ids = normalizeEventIds({ rid, userId });
 
@@ -674,30 +672,31 @@ io.on('connection', (socket) => {
                     answer: member.answer
                 }));
 
-            if (results.length === 0) {
-                io.to(ids.rid).emit('show-result', {
-                    results: [],
-                    isMatch: false,
-                    answeredCount: 0,
-                    totalCount: room.members.length,
-                    gameMode: 'ichimitsu'
-                });
-                return;
-            }
-
-            const firstAnswer = normalizeForCompare(results[0].answer);
-
-            const isMatch = results.every(
-                (result) => normalizeForCompare(result.answer) === firstAnswer
-            );
+            room.resultShown = true;
 
             io.to(ids.rid).emit('show-result', {
                 results,
-                isMatch,
+                isMatch: null,
+                awaitingVerdict: true,
                 answeredCount: results.length,
                 totalCount: room.members.length,
                 gameMode: 'ichimitsu'
             });
+        });
+    });
+
+    // ホストが「全員一致」か「不一致」かを決める
+    safeOn(socket, 'host-verdict', ({ rid, userId, isMatch }) => {
+        const ids = normalizeEventIds({ rid, userId });
+
+        if (!ids.rid || !ids.userId || typeof isMatch !== 'boolean') return;
+
+        asyncQueue.enqueue(ids.rid, async () => {
+            const room = getRoom(ids.rid);
+            if (!room || !isHost(room, ids.userId)) return;
+            if (room.gameMode !== 'ichimitsu' || !room.resultShown) return;
+
+            io.to(ids.rid).emit('show-verdict', { isMatch });
         });
     });
 

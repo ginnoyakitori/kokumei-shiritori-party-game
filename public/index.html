@@ -525,6 +525,10 @@
         <div id="result-message" class="status-banner hidden"></div>
         <div id="result-message-count" class="status-banner hidden" style="background:#e7f3ff; color:#0066cc; border-left-color:#0066cc;"></div>
         <div id="result-list"></div>
+        <div id="verdict-area" class="btn-group hidden">
+            <button id="verdict-match-btn" class="btn-yellow" onclick="sendVerdict(true)">✨ 全員一致</button>
+            <button id="verdict-miss-btn" class="btn-pink" onclick="sendVerdict(false)">❌ 不一致</button>
+        </div>
         <button id="next-btn" class="btn-yellow hidden" onclick="nextRound()">次のお題担当へ</button>
     </div>
 </div>
